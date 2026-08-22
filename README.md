@@ -6,7 +6,7 @@ The system ingests raw Excel project reports, cleans and normalizes inconsistent
 
 ## Features
 
-- Excel workbook ingestion
+- Excel workbook ingestion using Pandas and OpenPyXL
 - Project data cleaning and normalization
 - Boolean value normalization
 - Project status parsing
@@ -17,6 +17,7 @@ The system ingests raw Excel project reports, cleans and normalizes inconsistent
 - Detection of unknown lifecycle stages
 - Employee project selection through CLI
 - Automated test coverage
+- Real-world Excel workbook integration testing
 
 ## Architecture
 
@@ -53,4 +54,3 @@ Excel Workbook
 +-------------+
 |     CLI     |
 +-------------+
-
