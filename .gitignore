@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Data
+data/raw/
+data/processed/
+
+# Generated outputs
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
