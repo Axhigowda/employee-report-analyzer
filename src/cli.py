@@ -13,13 +13,15 @@ from src.reporting.project_report import (
 
 def find_employee_reports():
     """
-    Find available employee project workbooks.
+    Find supported reports for each employee.
 
     Expected structure:
 
         data/raw/employee_reports/
             EmployeeName/
-                projects.xlsx
+                report1.xlsx
+                report2.xlsx
+                ...
     """
 
     if not DATA_ROOT.exists():
@@ -32,14 +34,58 @@ def find_employee_reports():
         if not employee_dir.is_dir():
             continue
 
-        workbook = employee_dir / "projects.xlsx"
+        employee_reports = []
 
-        if workbook.exists():
-            reports[
-                employee_dir.name
-            ] = workbook
+        for report_file in sorted(employee_dir.iterdir()):
+
+            if not report_file.is_file():
+                continue
+
+            if report_file.name.startswith("."):
+                continue
+
+            if report_file.suffix.lower() not in {
+                ".xlsx",
+                ".xls",
+                ".xlsm",
+                ".csv",
+            }:
+                continue
+
+            employee_reports.append(report_file)
+
+        if employee_reports:
+            reports[employee_dir.name] = employee_reports
 
     return reports
+
+
+def select_project_sheet(sheets):
+    """
+    Select the worksheet containing project data.
+
+    Prefer the conventional 'Sheet1' name when present.
+    Otherwise, use the only available worksheet.
+
+    Raises:
+        ValueError: If the workbook has no worksheets or
+        contains multiple worksheets without a clear choice.
+    """
+
+    if not sheets:
+        raise ValueError(
+            "Workbook contains no worksheets"
+        )
+
+    if "Sheet1" in sheets:
+        return sheets["Sheet1"]
+
+    if len(sheets) == 1:
+        return next(iter(sheets.values()))
+
+    raise ValueError(
+        "Could not determine the project worksheet"
+    )
 
 
 def load_employee_projects(workbook_path):
@@ -51,14 +97,11 @@ def load_employee_projects(workbook_path):
         workbook_path
     )
 
-    if "Sheet1" not in sheets:
-        raise ValueError(
-            "Expected 'Sheet1' in workbook"
-        )
-
-    return clean_projects(
-        sheets["Sheet1"]
+    dataframe = select_project_sheet(
+        sheets
     )
+
+    return clean_projects(dataframe)
 
 
 def main():
