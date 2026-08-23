@@ -23,6 +23,7 @@ from src.semantic.extract import (
 from src.semantic.models import SemanticProfile
 from src.transformation.clean_projects import (
     clean_projects,
+    find_project_dataframes,
 )
 from src.reporting.project_report import (
     build_project_summary,
@@ -309,94 +310,106 @@ class EmployeeReportPipeline:
     # ========================================================
 
     def _extract_excel_projects(
-        self,
-        report: EmployeeReport,
-        document: Document,
+            self,
+            report: EmployeeReport,
+            document: Document,
     ) -> None:
         """
         Extract structured projects from an Excel document.
 
-        This deliberately reuses the existing, tested project
-        transformation pipeline.
+        Excel workbooks may contain many different kinds of
+        worksheets. Only worksheets matching the supported
+        project schema are passed to clean_projects().
+
+        Non-project worksheets are intentionally ignored by the
+        deterministic project extractor and remain available
+        through the normalized document text for later semantic
+        or AI analysis.
         """
 
         from src.ingestion.extract_excel import (
             extract_excel_file,
         )
-        from src.cli import select_project_sheet
 
         sheets = extract_excel_file(
             document.source_path
         )
 
-        dataframe = select_project_sheet(
+        project_sheets = find_project_dataframes(
             sheets
         )
 
-        projects = clean_projects(
-            dataframe
-        )
-
-        if not projects:
+        if not project_sheets:
             return
 
-        for project in projects:
-            report.projects.append(
-                ProjectSummary(
-                    name=(
-                            project.name
-                            or f"Project {project.project_id}"
-                    ),
-                    description=self._project_description(
-                        project
-                    ),
-                    status=project.status,
-                    owner=project.owner,
-                    department=project.department,
-                    timeline=project.timeline,
-                    lifecycle_stage=project.lifecycle_stage,
-                    next_action=project.next_action,
-                )
+        for _, dataframe in project_sheets:
+
+            projects = clean_projects(
+                dataframe
             )
 
-        # Add deterministic project-level metrics.
-        summary = build_project_summary(
-            projects
-        )
+            if not projects:
+                continue
 
-        self._merge_project_metrics(
-            report,
-            summary,
-        )
-
-        # Explicit next actions from project records.
-        for project in projects:
-            if project.next_action:
-                report.next_actions.append(
-                    project.next_action
+            for project in projects:
+                report.projects.append(
+                    ProjectSummary(
+                        name=(
+                                project.name
+                                or f"Project {project.project_id}"
+                        ),
+                        description=self._project_description(
+                            project
+                        ),
+                        status=project.status,
+                        owner=project.owner,
+                        department=project.department,
+                        timeline=project.timeline,
+                        lifecycle_stage=project.lifecycle_stage,
+                        next_action=project.next_action,
+                    )
                 )
 
-        # Explicit project activities/details can be useful
-        # as achievements only when the source actually marks
-        # them as completed.
-        for project in projects:
-            for detail in project.details:
-                if not detail.status:
-                    continue
+            # Add deterministic project-level metrics.
+            summary = build_project_summary(
+                projects
+            )
 
-                status = detail.status.lower()
+            self._merge_project_metrics(
+                report,
+                summary,
+            )
 
-                if "completed" in status:
-                    report.achievements.append(
-                        Achievement(
-                            title=detail.description,
-                            description=(
-                                f"Project: "
-                                f"{project.name or 'Unknown'}"
-                            ),
-                            status=detail.status,
-                        )
+            # Explicit next actions from project records.
+            for project in projects:
+                if project.next_action:
+                    report.next_actions.append(
+                        project.next_action
                     )
+
+            # Explicit project activities/details can be useful
+            # as achievements only when the source actually marks
+            # them as completed.
+            for project in projects:
+
+                for detail in project.details:
+
+                    if not detail.status:
+                        continue
+
+                    status = detail.status.lower()
+
+                    if "completed" in status:
+                        report.achievements.append(
+                            Achievement(
+                                title=detail.description,
+                                description=(
+                                    f"Project: "
+                                    f"{project.name or 'Unknown'}"
+                                ),
+                                status=detail.status,
+                            )
+                        )
 
     @staticmethod
     def _project_description(

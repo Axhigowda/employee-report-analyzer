@@ -244,14 +244,6 @@ def export_report_markdown(
 
         summary_lines.append("")
 
-        if project.next_action:
-            summary_lines.append(
-                f"- **Next Action:** "
-                f"{project.next_action}"
-            )
-
-        summary_lines.append("")
-
     summary_lines.extend(
         [
             "## Risks / Issues",
