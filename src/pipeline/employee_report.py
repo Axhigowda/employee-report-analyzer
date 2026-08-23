@@ -3,6 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
+from src.transformation.monthly_report import (
+    extract_monthly_report,
+    is_monthly_report_dataframe,
+)
+
 from src.ai.analyzer import EmployeeReportAnalyzer
 from src.ai.schemas import (
     Achievement,
@@ -97,7 +102,14 @@ class EmployeeReportPipeline:
         documents: list[Document] = []
 
         for path in paths:
-            document = self.ingest_document(path)
+            try:
+                document = self.ingest_document(path)
+            except Exception as exc:
+                print(
+                    f"Warning: Skipping invalid source file "
+                    f"{path.name}: {exc}"
+                )
+                continue
 
             documents.append(document)
 
@@ -171,6 +183,13 @@ class EmployeeReportPipeline:
 
         self._deduplicate_report(report)
 
+        # Calculate project metrics once, after all documents
+        # have contributed their projects.
+        self._merge_project_metrics(
+            report,
+            build_project_summary(report.projects),
+        )
+
         return report
 
     # ========================================================
@@ -230,6 +249,11 @@ class EmployeeReportPipeline:
             ".xlsm",
         }:
             self._extract_excel_projects(
+                report,
+                document,
+            )
+
+            self._extract_monthly_reports(
                 report,
                 document,
             )
@@ -342,6 +366,8 @@ class EmployeeReportPipeline:
         if not project_sheets:
             return
 
+        all_projects = []
+
         for _, dataframe in project_sheets:
 
             projects = clean_projects(
@@ -351,65 +377,106 @@ class EmployeeReportPipeline:
             if not projects:
                 continue
 
-            for project in projects:
-                report.projects.append(
-                    ProjectSummary(
-                        name=(
-                                project.name
-                                or f"Project {project.project_id}"
-                        ),
-                        description=self._project_description(
-                            project
-                        ),
-                        status=project.status,
-                        owner=project.owner,
-                        department=project.department,
-                        timeline=project.timeline,
-                        lifecycle_stage=project.lifecycle_stage,
-                        next_action=project.next_action,
-                    )
-                )
-
-            # Add deterministic project-level metrics.
-            summary = build_project_summary(
+            all_projects.extend(
                 projects
             )
 
-            self._merge_project_metrics(
-                report,
-                summary,
+        for project in all_projects:
+            report.projects.append(
+                ProjectSummary(
+                    name=(
+                            project.name
+                            or f"Project {project.project_id}"
+                    ),
+                    description=self._project_description(
+                        project
+                    ),
+                    status=project.status,
+                    owner=project.owner,
+                    department=project.department,
+                    timeline=project.timeline,
+                    lifecycle_stage=project.lifecycle_stage,
+                    next_action=project.next_action,
+                )
             )
 
-            # Explicit next actions from project records.
-            for project in projects:
-                if project.next_action:
-                    report.next_actions.append(
-                        project.next_action
+        # Explicit next actions from all project records.
+        for project in all_projects:
+
+            if project.next_action:
+                report.next_actions.append(
+                    project.next_action
+                )
+
+        # Explicit project activities/details can be useful
+        # as achievements only when the source actually marks
+        # them as completed.
+        for project in all_projects:
+
+            for detail in project.details:
+
+                if not detail.status:
+                    continue
+
+                status = detail.status.lower()
+
+                if "completed" in status:
+                    report.achievements.append(
+                        Achievement(
+                            title=detail.description,
+                            description=(
+                                f"Project: "
+                                f"{project.name or 'Unknown'}"
+                            ),
+                            status=detail.status,
+                        )
                     )
 
-            # Explicit project activities/details can be useful
-            # as achievements only when the source actually marks
-            # them as completed.
-            for project in projects:
+    def _extract_monthly_reports(
+            self,
+            report: EmployeeReport,
+            document: Document,
+    ) -> None:
+        """
+        Extract structured information from monthly performance
+        report worksheets.
+        """
 
-                for detail in project.details:
+        from src.ingestion.extract_excel import (
+            extract_excel_file,
+        )
 
-                    if not detail.status:
-                        continue
+        sheets = extract_excel_file(
+            document.source_path
+        )
 
-                    status = detail.status.lower()
+        for dataframe in sheets.values():
 
-                    if "completed" in status:
-                        report.achievements.append(
-                            Achievement(
-                                title=detail.description,
-                                description=(
-                                    f"Project: "
-                                    f"{project.name or 'Unknown'}"
-                                ),
-                                status=detail.status,
-                            )
-                        )
+            if not is_monthly_report_dataframe(
+                    dataframe
+            ):
+                continue
+
+            extracted = extract_monthly_report(
+                dataframe
+            )
+
+            report.achievements.extend(
+                extracted["achievements"]
+            )
+
+            report.responsibilities.extend(
+                extracted["responsibilities"]
+            )
+
+            report.projects.extend(
+                extracted["projects"]
+            )
+
+            report.risks_or_issues.extend(
+                extracted["risks_or_issues"]
+            )
+
 
     @staticmethod
     def _project_description(
@@ -430,17 +497,16 @@ class EmployeeReportPipeline:
 
     @staticmethod
     def _merge_project_metrics(
-        report: EmployeeReport,
-        summary: dict,
+            report: EmployeeReport,
+            summary: dict,
     ) -> None:
         total = summary.get(
             "total_projects"
         )
 
         if total is not None:
-            report.metrics.setdefault(
-                "total_projects",
-                str(total),
+            report.metrics["total_projects"] = str(
+                total
             )
 
         next_actions = summary.get(
@@ -448,9 +514,8 @@ class EmployeeReportPipeline:
         )
 
         if next_actions is not None:
-            report.metrics.setdefault(
-                "projects_with_next_actions",
-                str(next_actions),
+            report.metrics["projects_with_next_actions"] = str(
+                next_actions
             )
 
         unknown = summary.get(
@@ -458,9 +523,8 @@ class EmployeeReportPipeline:
         )
 
         if unknown is not None:
-            report.metrics.setdefault(
-                "unknown_lifecycle_projects",
-                str(unknown),
+            report.metrics["unknown_lifecycle_projects"] = str(
+                unknown
             )
 
         lifecycle_counts = summary.get(
@@ -469,10 +533,9 @@ class EmployeeReportPipeline:
         )
 
         for stage, count in lifecycle_counts.items():
-            report.metrics.setdefault(
-                f"lifecycle_{stage.lower()}",
-                str(count),
-            )
+            report.metrics[
+                f"lifecycle_{stage.lower()}"
+            ] = str(count)
 
     # ========================================================
     # AI processing

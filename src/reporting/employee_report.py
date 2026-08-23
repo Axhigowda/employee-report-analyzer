@@ -401,12 +401,6 @@ def format_employee_report(
                     f"{project.lifecycle_stage}"
                 )
 
-            if project.lifecycle_stage:
-                lines.append(
-                    f"   Lifecycle: "
-                    f"{project.lifecycle_stage}"
-                )
-
             if project.next_action:
                 lines.append(
                     f"   Next Action: "

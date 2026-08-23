@@ -15,12 +15,157 @@ class OpenAIProviderError(Exception):
     """Raised when OpenAI provider configuration or execution fails."""
 
 
+EMPLOYEE_REPORT_JSON_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "employee_name": {
+            "type": "string",
+        },
+        "source_files": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+        "achievements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string"},
+                    "description": {
+                        "type": ["string", "null"],
+                    },
+                    "status": {
+                        "type": ["string", "null"],
+                    },
+                    "metric": {
+                        "type": ["string", "null"],
+                    },
+                },
+                "required": [
+                    "title",
+                    "description",
+                    "status",
+                    "metric",
+                ],
+            },
+        },
+        "responsibilities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string"},
+                    "description": {
+                        "type": ["string", "null"],
+                    },
+                    "target": {
+                        "type": ["string", "null"],
+                    },
+                    "actual": {
+                        "type": ["string", "null"],
+                    },
+                },
+                "required": [
+                    "title",
+                    "description",
+                    "target",
+                    "actual",
+                ],
+            },
+        },
+        "projects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {
+                        "type": ["string", "null"],
+                    },
+                    "status": {
+                        "type": ["string", "null"],
+                    },
+                    "owner": {
+                        "type": ["string", "null"],
+                    },
+                    "department": {
+                        "type": ["string", "null"],
+                    },
+                    "timeline": {
+                        "type": ["string", "null"],
+                    },
+                    "lifecycle_stage": {
+                        "type": "string",
+                        "enum": [
+                            "DEVELOPMENT",
+                            "UAT",
+                            "PRODUCTION",
+                            "VENDOR_SELECTION",
+                            "PLANNING",
+                            "BLOCKED",
+                            "COMPLETED",
+                            "UNKNOWN",
+                        ],
+                    },
+                    "next_action": {
+                        "type": ["string", "null"],
+                    },
+                },
+                "required": [
+                    "name",
+                    "description",
+                    "status",
+                    "owner",
+                    "department",
+                    "timeline",
+                    "lifecycle_stage",
+                    "next_action",
+                ],
+            },
+        },
+        "metrics": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "string",
+            },
+        },
+        "risks_or_issues": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+        "next_actions": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+    },
+    "required": [
+        "employee_name",
+        "source_files",
+        "achievements",
+        "responsibilities",
+        "projects",
+        "metrics",
+        "risks_or_issues",
+        "next_actions",
+    ],
+}
+
+
 class OpenAICompletion:
     """
     OpenAI-backed completion provider.
 
-    Implements the callable contract expected by
-    EmployeeReportAnalyzer:
+    Implements:
 
         completion(system_prompt, user_prompt) -> str
     """
@@ -75,7 +220,7 @@ class OpenAICompletion:
             client
             if client is not None
             else OpenAI(
-                api_key=self.api_key
+                api_key=self.api_key,
             )
         )
 
@@ -100,6 +245,14 @@ class OpenAICompletion:
                 model=self.model,
                 instructions=system_prompt,
                 input=user_prompt,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "employee_report",
+                        "strict": True,
+                        "schema": EMPLOYEE_REPORT_JSON_SCHEMA,
+                    }
+                },
             )
 
         except Exception as exc:

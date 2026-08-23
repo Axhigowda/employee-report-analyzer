@@ -15,6 +15,10 @@ SUPPORTED_EXCEL_EXTENSIONS = {
 }
 
 
+class EmptyExcelFileError(ValueError):
+    """Raised when an Excel file exists but contains no data."""
+
+
 def extract_excel_file(file_path):
     """
     Read every sheet from an Excel workbook.
@@ -38,8 +42,8 @@ def extract_excel_file(file_path):
         )
 
     if file_path.suffix.lower() not in SUPPORTED_EXCEL_EXTENSIONS:
-        raise ValueError(
-            f"Unsupported file type: {file_path.suffix}"
+        raise EmptyExcelFileError(
+            f"Excel file is empty: {file_path}"
         )
 
     workbook = pd.ExcelFile(file_path)
@@ -82,6 +86,11 @@ def extract_excel_document(file_path):
     if not file_path.exists():
         raise FileNotFoundError(
             f"File does not exist: {file_path}"
+        )
+
+    if file_path.stat().st_size == 0:
+        raise ValueError(
+            f"Excel file is empty: {file_path}"
         )
 
     workbook = pd.ExcelFile(file_path)

@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from src.ai.analyzer import EmployeeReportAnalyzer
 from src.pipeline.employee_report import (
     EmployeeReportPipeline,

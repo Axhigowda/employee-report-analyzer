@@ -67,6 +67,46 @@ def test_provider_uses_injected_client():
     assert call["instructions"] == "system prompt"
     assert call["input"] == "user prompt"
 
+    assert call["text"]["format"]["type"] == "json_schema"
+    assert call["text"]["format"]["name"] == "employee_report"
+    assert call["text"]["format"]["strict"] is True
+
+    schema = call["text"]["format"]["schema"]
+
+    assert schema["type"] == "object"
+    assert "employee_name" in schema["properties"]
+    assert "projects" in schema["properties"]
+    assert "achievements" in schema["properties"]
+    assert "responsibilities" in schema["properties"]
+
+
+def test_provider_uses_employee_report_schema():
+
+    fake_client = FakeClient(
+        response=FakeResponse(
+            '{"employee_name": "Bikash"}'
+        )
+    )
+
+    provider = OpenAICompletion(
+        api_key="test-key",
+        model="test-model",
+        client=fake_client,
+    )
+
+    provider(
+        "system prompt",
+        "user prompt",
+    )
+
+    call = fake_client.responses.calls[0]
+
+    report_format = call["text"]["format"]
+
+    assert report_format["type"] == "json_schema"
+    assert report_format["name"] == "employee_report"
+    assert report_format["strict"] is True
+
 
 def test_provider_requires_api_key(monkeypatch):
 
