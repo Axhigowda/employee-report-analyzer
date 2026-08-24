@@ -272,4 +272,4 @@ def test_provider_uses_default_model_when_api_key_is_explicit(
         client=fake_client,
     )
 
-    assert provider.model == "gpt-5.6-luna"
+    assert provider.model == "gpt-4o-mini"

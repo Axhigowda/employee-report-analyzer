@@ -235,7 +235,7 @@ class OpenAICompletion:
                     if model is not None
                     else os.getenv(
                         "OPENAI_MODEL",
-                        "gpt-5.6-luna",
+                        "gpt-4o-mini",
                     )
                 )
 

@@ -98,4 +98,4 @@ def test_config_uses_default_model(
 
     config = AIConfig.from_environment()
 
-    assert config.model == "gpt-5.6-luna"
+    assert config.model == "gpt-4o-mini"

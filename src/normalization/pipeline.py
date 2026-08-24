@@ -6,17 +6,14 @@ from .excel_normalizer import (
     detect_period,
     normalize_workbook,
 )
-
 from .models import (
     EmployeeDataset,
     NormalizedDocument,
     ReportingPeriod,
 )
-
 from .periods import parse_period_from_filename
-
 from .snapshot import resolve_employee_snapshots
-
+from .word_normalizer import normalize_word_document
 
 IGNORED_FILES = {
     ".ds_store",
@@ -29,22 +26,24 @@ SUPPORTED_EXCEL_EXTENSIONS = {
     ".xlsm",
 }
 
+SUPPORTED_WORD_EXTENSIONS = {
+    ".docx",
+    ".doc",
+}
+
+SUPPORTED_REPORT_EXTENSIONS = (
+    SUPPORTED_EXCEL_EXTENSIONS | SUPPORTED_WORD_EXTENSIONS
+)
+
 
 def should_process(path: Path) -> bool:
     """
     Determine whether a path is a supported report file.
-
-    This function intentionally checks file type/name only.
-    Filesystem validity is handled separately when we actually
-    attempt to normalize the file.
     """
-
     path = Path(path)
-
-    if path.name.lower() in IGNORED_FILES:
+    if path.name.lower() in IGNORED_FILES or path.name.startswith("."):
         return False
-
-    return path.suffix.lower() in SUPPORTED_EXCEL_EXTENSIONS
+    return path.suffix.lower() in SUPPORTED_REPORT_EXTENSIONS
 
 
 def discover_employee_files(
@@ -53,21 +52,17 @@ def discover_employee_files(
     """
     Discover supported report files grouped by employee.
     """
-
     root = Path(report_root)
-
     employees: dict[str, list[Path]] = {}
 
     if not root.exists():
         return employees
 
     for employee_dir in sorted(root.iterdir()):
-
-        if not employee_dir.is_dir():
+        if not employee_dir.is_dir() or employee_dir.name.startswith("."):
             continue
 
         employee = employee_dir.name
-
         files = [
             path
             for path in sorted(employee_dir.iterdir())
@@ -81,20 +76,9 @@ def discover_employee_files(
 
 
 def _default_extractor(path: Path):
-    """
-    Adapter around the existing Excel ingestion layer.
-
-    The normalizer operates on DataFrames while the ingestion layer
-    exposes Document/DocumentSheet objects, so this converts the
-    extracted sheets into the representation expected here.
-    """
-
-    from src.ingestion.extract_excel import (
-        extract_excel_document,
-    )
+    from src.ingestion.extract_excel import extract_excel_document
 
     document = extract_excel_document(path)
-
     return {
         sheet.name: _document_sheet_to_dataframe(sheet)
         for sheet in document.sheets
@@ -103,7 +87,6 @@ def _default_extractor(path: Path):
 
 def _document_sheet_to_dataframe(sheet):
     import pandas as pd
-
     return pd.DataFrame(sheet.rows)
 
 
@@ -111,22 +94,16 @@ def detect_document_period(
     sheets: dict[str, pd.DataFrame],
     path: Path,
 ) -> ReportingPeriod | None:
-
     # First: workbook content
     for _, df in sheets.items():
         period = detect_period(df)
-
         if period is not None:
             return period
 
     # Second: filename
-    filename_period = parse_period_from_filename(
-        path.name
-    )
-
+    filename_period = parse_period_from_filename(path.name)
     if filename_period:
         start, end = filename_period
-
         return ReportingPeriod(
             start=start,
             end=end,
@@ -143,62 +120,41 @@ def normalize_file(
     extractor=None,
 ) -> NormalizedDocument | None:
     """
-    Normalize one Excel workbook.
-
-    Empty or unreadable files are skipped gracefully.
-
-    ``extractor`` remains optional so callers and tests can use the
-    public API directly with just employee + path.
+    Normalize one Excel workbook or Word document into structured evidence.
     """
-
     path = Path(path)
 
-    if not should_process(path):
+    if not should_process(path) or not path.exists():
         return None
 
-    if not path.exists():
-        return None
-
-    # Empty files are invalid Excel workbooks.
     if path.stat().st_size == 0:
-        print(
-            f"[WARN] Skipping empty file: {path}"
-        )
+        print(f"[WARN] Skipping empty file: {path}")
         return None
 
+    # Handle Word documents (.doc / .docx)
+    if path.suffix.lower() in SUPPORTED_WORD_EXTENSIONS:
+        return normalize_word_document(employee, path)
+
+    # Handle Excel documents
     if extractor is None:
         extractor = _default_extractor
 
     try:
         sheets = extractor(path)
-
     except Exception as exc:
-        print(
-            f"[WARN] Skipping unreadable file: "
-            f"{path} ({exc})"
-        )
+        print(f"[WARN] Skipping unreadable file: {path} ({exc})")
         return None
 
     if not sheets:
-        print(
-            f"[WARN] Skipping workbook with no sheets: "
-            f"{path}"
-        )
+        print(f"[WARN] Skipping workbook with no sheets: {path}")
         return None
 
-    period = detect_document_period(
-        sheets=sheets,
-        path=path,
+    period = detect_document_period(sheets=sheets, path=path)
+    document_period_source = (
+        "workbook" if period is not None and period.label != path.name
+        else "filename" if period is not None
+        else "unknown"
     )
-
-    if period is not None:
-        document_period_source = (
-            "workbook"
-            if period.label != path.name
-            else "filename"
-        )
-    else:
-        document_period_source = "unknown"
 
     document = normalize_workbook(
         employee=employee,
@@ -209,12 +165,8 @@ def normalize_file(
 
     document.metadata["file_name"] = path.name
     document.metadata["file_size"] = path.stat().st_size
-    document.metadata["period_detected"] = (
-            period is not None
-    )
-    document.metadata["period_source"] = (
-        document_period_source
-    )
+    document.metadata["period_detected"] = period is not None
+    document.metadata["period_source"] = document_period_source
 
     return document
 
@@ -227,15 +179,10 @@ def normalize_employee(
     """
     Normalize all usable reports for one employee.
     """
-
-    dataset = EmployeeDataset(
-        employee=employee,
-    )
-
+    dataset = EmployeeDataset(employee=employee)
     skipped_files: list[str] = []
 
     for path in files:
-
         if not should_process(path):
             continue
 
@@ -246,26 +193,16 @@ def normalize_employee(
         )
 
         if document is None:
-            skipped_files.append(
-                str(path)
-            )
+            skipped_files.append(str(path))
             continue
 
-        dataset.documents.append(
-            document
-        )
+        dataset.documents.append(document)
 
-    # EmployeeDataset deliberately has no metadata field in the
-    # current data contract. Keep skipped-file information at the
-    # document level and do not mutate the model contract here.
     dataset.rebuild_evidence()
-
     dataset = resolve_employee_snapshots(dataset)
 
     for document in dataset.documents:
-        document.metadata["skipped_files"] = list(
-            skipped_files
-        )
+        document.metadata["skipped_files"] = list(skipped_files)
 
     return dataset
 
@@ -277,15 +214,10 @@ def normalize_all_employees(
     """
     Normalize all employee report directories.
     """
-
-    discovered = discover_employee_files(
-        report_root
-    )
-
+    discovered = discover_employee_files(report_root)
     datasets: dict[str, EmployeeDataset] = {}
 
     for employee, files in discovered.items():
-
         datasets[employee] = normalize_employee(
             employee=employee,
             files=files,

@@ -484,6 +484,22 @@ def _meaningful_record_fields(
     return result
 
 
+def table_has_identifier_column(headers: list[str]) -> bool:
+    identifier_headers = {
+        "no",
+        "s no",
+        "sr no",
+        "sl no",
+        "serial no",
+        "serial number",
+        "project no",
+        "project number",
+        "initiative no",
+        "initiative number",
+    }
+    return any(normalize_header(h) in identifier_headers for h in headers)
+
+
 def row_looks_like_new_record(
     record: dict[str, str],
     headers: list[str],
@@ -491,29 +507,26 @@ def row_looks_like_new_record(
     """
     Determine whether a row should start a new logical record.
 
-    Explicit identifiers always win.
+    For numbered tables (where the schema contains an identifier column),
+    an explicit identifier is required to start a new record. Unnumbered
+    rows represent continuation / detail bullet points of the active record.
 
-    For unnumbered tables, substantive values in the primary
-    descriptive columns are used instead.
-
-    This avoids the old behaviour where every unnumbered row was
-    automatically treated as a continuation.
+    For unnumbered tables, substantive values in primary descriptive columns
+    are used to identify distinct records.
     """
-
     if row_has_primary_identifier(record):
         return True
 
-    meaningful = _meaningful_record_fields(
-        record
-    )
+    if table_has_identifier_column(headers):
+        return False
 
+    meaningful = _meaningful_record_fields(record)
     if not meaningful:
         return False
 
-    primary_headers = {
+    primary_entity_headers = {
         "project",
         "project name",
-        "description",
         "responsibility area",
         "initiative",
         "initiative name",
@@ -523,22 +536,17 @@ def row_looks_like_new_record(
         "goal description",
         "vendor name",
         "material description",
+        "description",
         "employee",
         "employee name",
         "owner",
         "title",
-        "activity",
-        "task",
     }
 
     for key, value in meaningful:
-
-        if key in primary_headers and value:
+        if key in primary_entity_headers and value:
             return True
 
-    # If there is no obvious primary field, a row containing several
-    # populated business fields is more likely to be a standalone
-    # record than a continuation.
     if len(meaningful) >= 2:
         return True
 
@@ -552,31 +560,17 @@ def is_likely_continuation_row(
     """
     Determine whether a row is more likely to continue the previous
     logical record.
-
-    Continuations generally:
-
-      * have no explicit identifier,
-      * contain a small amount of text,
-      * populate descriptive/status fields,
-      * and do not introduce a new primary record identifier.
     """
-
     if not record:
         return False
 
     if row_has_primary_identifier(record):
         return False
 
-    if row_looks_like_new_record(
-        record,
-        headers,
-    ):
+    if row_looks_like_new_record(record, headers):
         return False
 
-    meaningful = _meaningful_record_fields(
-        record
-    )
-
+    meaningful = _meaningful_record_fields(record)
     if not meaningful:
         return False
 
@@ -670,35 +664,6 @@ def infer_evidence_type(
         return EvidenceType.RISK
 
     # ------------------------------------------------------------------
-    # Responsibility
-    # ------------------------------------------------------------------
-
-    responsibility_headers = {
-        "responsibility",
-        "responsibilities",
-        "responsibility area",
-        "area of responsibility",
-        "key responsibility",
-        "key responsibilities",
-        "role",
-        "roles",
-    }
-
-    if normalized_headers & responsibility_headers:
-        return EvidenceType.RESPONSIBILITY
-
-    if any(
-            token in normalized_text
-            for token in (
-                    "responsibility area",
-                    "area of responsibility",
-                    "key responsibility",
-                    "key responsibilities",
-            )
-    ):
-        return EvidenceType.RESPONSIBILITY
-
-    # ------------------------------------------------------------------
     # Achievement
     # ------------------------------------------------------------------
 
@@ -729,6 +694,35 @@ def infer_evidence_type(
             )
     ):
         return EvidenceType.ACHIEVEMENT
+
+    # ------------------------------------------------------------------
+    # Responsibility
+    # ------------------------------------------------------------------
+
+    responsibility_headers = {
+        "responsibility area",
+        "area of responsibility",
+        "responsibility",
+        "responsibilities",
+        "key responsibility",
+        "key responsibilities",
+        "role",
+        "roles",
+    }
+
+    if normalized_headers & responsibility_headers:
+        return EvidenceType.RESPONSIBILITY
+
+    if any(
+            token in normalized_text
+            for token in (
+                    "responsibility area",
+                    "area of responsibility",
+                    "key responsibility",
+                    "key responsibilities",
+            )
+    ):
+        return EvidenceType.RESPONSIBILITY
 
     # ------------------------------------------------------------------
     # Metric
@@ -1134,6 +1128,23 @@ def normalize_sheet(
     )
 
     current_section = ""
+    for r_idx in range(header_row):
+        r_vals = non_empty_values(df.iloc[r_idx])
+        if r_vals:
+            text = " ".join(r_vals).strip()
+            if any(
+                term in text.lower()
+                for term in (
+                    "major achievement",
+                    "achievement",
+                    "initiatives",
+                    "kra",
+                    "challenge",
+                    "support required",
+                )
+            ):
+                current_section = text
+                break
 
     evidence_type = infer_evidence_type(
         sheet_name,
@@ -1347,21 +1358,50 @@ def _record_to_evidence(
         raw_data=record,
     )
 
-    if evidence_type == EvidenceType.METRIC:
+    desc_val = next(
+        (
+            value
+            for key, value in record.items()
+            if any(h in normalize_header(key) for h in ("description", "metric", "measure", "item"))
+        ),
+        None,
+    )
 
-        description = next(
+    if desc_val and any(
+        term in desc_val.lower()
+        for term in (
+            "total purchase",
+            "saving",
+            "productivity",
+            "new source",
+            "new value addition",
+            "arc",
+            "on time delivery",
+            "cost reduction",
+        )
+    ):
+        evidence.evidence_type = EvidenceType.METRIC
+        evidence.metric_name = desc_val
+
+    if evidence.evidence_type == EvidenceType.METRIC:
+        if not evidence.metric_name and desc_val:
+            evidence.metric_name = desc_val
+
+        val = next(
             (
                 value
-                for key, value
-                in record.items()
-                if "description"
-                in normalize_header(key)
+                for key, value in record.items()
+                if any(k in normalize_header(key) for k in ("total", "actual", "actuals", "value"))
             ),
             None,
         )
-
-        if description:
-            evidence.metric_name = description
+        if not val:
+            for k, v in reversed(list(record.items())):
+                if k not in ("sr no", "s no", "no", "description") and any(c.isdigit() for c in str(v)):
+                    val = v
+                    break
+        if val:
+            evidence.value = val
 
     return [evidence]
 

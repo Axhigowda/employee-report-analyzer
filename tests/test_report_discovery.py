@@ -47,7 +47,8 @@ def test_find_employee_reports_returns_all_supported_reports(
     reports = find_employee_reports()
 
     assert "Bikash" in reports
-    assert len(reports["Bikash"]) == 2
+    # projects.xlsx, March.xlsx, notes.doc are all supported
+    assert len(reports["Bikash"]) == 3
 
 
 def test_find_employee_reports_ignores_unsupported_files(
@@ -57,7 +58,7 @@ def test_find_employee_reports_ignores_unsupported_files(
     employee_dir = tmp_path / "Rahul"
     employee_dir.mkdir()
 
-    (employee_dir / "report.doc").touch()
+    (employee_dir / "report.pdf").touch()
     (employee_dir / "report.txt").touch()
     (employee_dir / ".DS_Store").touch()
 

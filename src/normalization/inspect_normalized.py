@@ -1,12 +1,13 @@
-from pathlib import Path
+"""
+[DEV ONLY] Normalization inspection and debug script.
+Not used in production pipeline execution.
+"""
+from __future__ import annotations
 
+from pathlib import Path
 from src.normalization.pipeline import normalize_file
 
-
-REPORT_DIRECTORY = Path(
-    "data/raw/employee_reports"
-)
-
+REPORT_DIRECTORY = Path("data/raw/employee_reports")
 
 FILES_TO_INSPECT = [
     "Bikash/projects.xlsx",
@@ -18,10 +19,7 @@ FILES_TO_INSPECT = [
 
 
 def inspect_file(relative_path: str) -> None:
-
-    file_path = (
-        REPORT_DIRECTORY / relative_path
-    )
+    file_path = REPORT_DIRECTORY / relative_path
 
     print()
     print("=" * 100)
@@ -29,11 +27,7 @@ def inspect_file(relative_path: str) -> None:
     print("=" * 100)
 
     employee = file_path.parent.name
-
-    document = normalize_file(
-        employee=employee,
-        path=file_path,
-    )
+    document = normalize_file(employee=employee, path=file_path)
 
     if document is None:
         print("[NO DOCUMENT]")
@@ -51,7 +45,6 @@ def inspect_file(relative_path: str) -> None:
     print("-" * 100)
 
     period = document.reporting_period
-
     if period is None:
         print("None")
     else:
@@ -64,20 +57,14 @@ def inspect_file(relative_path: str) -> None:
     print()
     print("METADATA")
     print("-" * 100)
-
     for key, value in document.metadata.items():
         print(f"{key}: {value}")
 
     print()
     print("EVIDENCE")
     print("=" * 100)
-
-    for index, evidence in enumerate(
-        document.evidence,
-        start=1,
-    ):
-        print()
-        print(f"[{index}]")
+    for index, evidence in enumerate(document.evidence, start=1):
+        print(f"\n[{index}]")
         print(f"Type:        {evidence.evidence_type.value}")
         print(f"Claim:       {evidence.claim}")
         print(f"Sheet:       {evidence.source_sheet}")
@@ -95,7 +82,6 @@ def inspect_file(relative_path: str) -> None:
 
 
 def main() -> None:
-
     for relative_path in FILES_TO_INSPECT:
         inspect_file(relative_path)
 

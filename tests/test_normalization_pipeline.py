@@ -86,12 +86,16 @@ def test_discover_employee_files():
     assert "Binod" in employees
     assert "Pradeep" in employees
     assert "Ravi" in employees
-    assert "Vineet" in employees
+    assert "Rahul Kumar jha" in employees
+    assert "Lakshmipathi" in employees
 
     assert all(
         path.suffix.lower() in {
             ".xlsx",
             ".xls",
+            ".xlsm",
+            ".docx",
+            ".doc",
         }
         for files in employees.values()
         for path in files

@@ -1,28 +1,23 @@
+"""
+[DEV ONLY] File hierarchy discovery utility for employee reports.
+Not used in production pipeline execution.
+"""
+from __future__ import annotations
+
 from pathlib import Path
+from src.config import DATA_ROOT
 
 
-def inspect_files(data_directory):
-    data_path = Path(data_directory)
-
-    if not data_path.exists():
-        print(f"Directory does not exist: {data_path}")
-        return
-
-    for file_path in sorted(data_path.rglob("*")):
-
-        if not file_path.is_file():
+def list_files(base_path: Path) -> None:
+    for employee_dir in sorted(base_path.iterdir()):
+        if not employee_dir.is_dir() or employee_dir.name.startswith("."):
             continue
 
-        relative_path = file_path.relative_to(data_path)
-
-        employee = relative_path.parts[0]
-
-        print(f"Employee   : {employee}")
-        print(f"File       : {file_path.name}")
-        print(f"Extension  : {file_path.suffix}")
-        print(f"Full Path  : {file_path}")
-        print("-" * 60)
+        print(f"\nEmployee: {employee_dir.name}")
+        for file in sorted(employee_dir.iterdir()):
+            if not file.name.startswith("."):
+                print(f"  - {file.name}")
 
 
 if __name__ == "__main__":
-    inspect_files("data/raw/employee_reports")
+    list_files(DATA_ROOT)

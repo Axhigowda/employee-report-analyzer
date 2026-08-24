@@ -80,8 +80,14 @@ def extract_excel_document(file_path):
         )
 
     if file_path.stat().st_size == 0:
-        raise ValueError(
-            f"Excel file is empty: {file_path}"
+        return Document(
+            source_path=file_path,
+            file_name=file_path.name,
+            file_type=file_path.suffix.lower(),
+            sheets=[],
+            metadata={
+                "sheet_count": 0,
+            },
         )
 
     workbook = pd.ExcelFile(file_path)
