@@ -22,8 +22,92 @@ from .periods import (
 
 
 # ---------------------------------------------------------------------------
-# Basic cleaning
+# Basic cleaning & normalization utilities
 # ---------------------------------------------------------------------------
+
+
+def is_placeholder(value: Any) -> bool:
+    """
+    Check if a value represents a placeholder or missing data.
+    Note: Numeric 0, 0.0, and boolean False are VALID data and NOT placeholders.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return math.isnan(value) if isinstance(value, float) else False
+
+    text = str(value).strip().lower()
+    if not text:
+        return True
+
+    placeholder_tokens = {
+        "-",
+        "--",
+        "---",
+        "na",
+        "n/a",
+        "n.a",
+        "n.a.",
+        "nil",
+        "none",
+        "null",
+        "nan",
+        "not applicable",
+        "not available",
+        "unnamed",
+        "tbd",
+        "tba",
+    }
+    if text in placeholder_tokens:
+        return True
+
+    if re.match(r"^unnamed\s*[:_]?\s*\d+$", text):
+        return True
+    if re.match(r"^column\s*[:_]?\s*\d+$", text):
+        return True
+    return False
+
+
+def is_serial_header(header: str) -> bool:
+    """Check if header represents a row index / serial column rather than business data."""
+    norm = normalize_header(header)
+    serial_patterns = {
+        "no",
+        "s no",
+        "sl no",
+        "sr no",
+        "serial no",
+        "serial number",
+        "index",
+        "s_no",
+        "sl_no",
+        "sr_no",
+        "row no",
+        "item no",
+    }
+    if norm in serial_patterns:
+        return True
+    if re.match(r"^(s|sl|sr|serial)?\s*no\.?$", norm):
+        return True
+    if re.match(r"^unnamed\s*[:_]?\s*\d+$", norm):
+        return True
+    if re.match(r"^column\s*[:_]?\s*\d+$", norm):
+        return True
+    return False
+
+
+def strip_serial_prefixes(text: str) -> str:
+    """Strip 'no: 1 | ', 'sl no: 3 | ' and similar indexing prefixes."""
+    cleaned = re.sub(r"^(?:sl|sr|s)?\s*no\.?\s*:\s*\d+\s*(?:\|\s*)?", "", text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^\d+[\.\)]\s*", "", cleaned).strip()
+    return cleaned
+
+
+def clean_field_name(header: Any) -> str:
+    """Normalize a header into clean lowercase words without punctuation."""
+    return normalize_header(header)
 
 
 def clean_value(value: Any) -> Any:
@@ -71,7 +155,7 @@ def non_empty_values(
     return [
         value
         for value in row_values(row)
-        if value
+        if not is_placeholder(value)
     ]
 
 
@@ -1037,10 +1121,13 @@ def row_to_record(
         if index >= len(headers):
             continue
 
-        if not value:
+        if is_placeholder(value):
             continue
 
         header = headers[index]
+
+        if is_serial_header(header):
+            continue
 
         record[header] = value
 
@@ -1072,7 +1159,10 @@ def merge_records(
 
     for key, value in continuation.items():
 
-        if not value:
+        if is_placeholder(value):
+            continue
+
+        if is_serial_header(key):
             continue
 
         if key not in merged:
@@ -1098,7 +1188,7 @@ def record_to_claim(
     return " | ".join(
         f"{key}: {value}"
         for key, value in record.items()
-        if value
+        if value and not is_placeholder(value) and not is_serial_header(key)
     )
 
 
@@ -1236,6 +1326,14 @@ def normalize_sheet(
 
             continue
 
+        raw_values_map = {
+            headers[i]: clean_text(val)
+            for i, val in enumerate(row.tolist())
+            if i < len(headers) and not is_placeholder(val)
+        }
+        has_id = row_has_primary_identifier(raw_values_map)
+        has_id_col = table_has_identifier_column(headers)
+
         record = row_to_record(
             row,
             headers,
@@ -1254,18 +1352,21 @@ def normalize_sheet(
 
         # Determine whether this row starts a new logical record or
         # continues the previous one.
-        if (
-            pending_record is not None
-            and is_likely_continuation_row(
-                record,
-                headers,
-            )
-        ):
+        is_continuation = False
+        if pending_record is not None:
+            if has_id_col:
+                is_continuation = not has_id
+            else:
+                is_continuation = is_likely_continuation_row(
+                    record,
+                    headers,
+                )
+
+        if is_continuation:
             pending_record = merge_records(
                 pending_record,
                 record,
             )
-
             continue
 
         # An unnumbered row with substantive primary information is

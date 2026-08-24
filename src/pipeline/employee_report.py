@@ -21,6 +21,11 @@ from src.ingestion.extract_excel import extract_excel_document
 from src.ingestion.extract_word import extract_word_document
 from src.models.document import Document
 from src.normalization.document_to_text import document_to_text
+from src.normalization.excel_normalizer import (
+    is_placeholder,
+    is_serial_header,
+    strip_serial_prefixes,
+)
 from src.normalization.models import EmployeeDataset, Evidence, EvidenceType
 from src.normalization.periods import resolve_reporting_periods
 from src.normalization.pipeline import normalize_employee
@@ -452,18 +457,24 @@ class EmployeeReportPipeline:
         seen: set[str] = set()
 
         for evidence in dataset.evidence:
-            if evidence.evidence_type != EvidenceType.RESPONSIBILITY:
+            raw = evidence.raw_data or {}
+            is_resp = (
+                evidence.evidence_type == EvidenceType.RESPONSIBILITY
+                or "task" in raw
+                or "responsibility area" in raw
+                or "responsibility" in raw
+            )
+            if not is_resp:
                 continue
 
-            raw = evidence.raw_data or {}
             title = cls._raw_value(
                 raw,
+                "task",
                 "responsibility area",
                 "kra title",
                 "responsibility",
                 "area",
                 "title",
-                "task",
             )
             description = cls._raw_value(
                 raw,
@@ -476,10 +487,11 @@ class EmployeeReportPipeline:
             if not title:
                 title = description if description else (evidence.claim.split("|")[0].strip() if evidence.claim else "")
 
-            if not title or len(title) < 2:
+            clean_title_str = cls._clean_title(strip_serial_prefixes(title))
+            if not clean_title_str or len(clean_title_str) < 2 or is_placeholder(clean_title_str):
                 continue
 
-            key = " ".join(f"{title.lower()} {description[:30].lower()}".split())
+            key = " ".join(f"{clean_title_str.lower()} {(description or '')[:30].lower()}".split())
             if key in seen:
                 continue
             seen.add(key)
@@ -491,15 +503,15 @@ class EmployeeReportPipeline:
                 source_file=str(evidence.source_file or ""),
                 sheet_name=str(evidence.source_sheet or ""),
                 row_number=evidence.source_row,
-                source_text=evidence.claim[:200] if evidence.claim else title,
+                source_text=evidence.claim[:200] if evidence.claim else clean_title_str,
                 extraction_method="deterministic_responsibility",
                 confidence=0.90,
             )
 
             responsibilities.append(
                 Responsibility(
-                    title=cls._clean_title(title),
-                    description=description,
+                    title=clean_title_str,
+                    description=description or "",
                     target=target,
                     actual=actual,
                     status=actual or "Active",
@@ -629,29 +641,35 @@ class EmployeeReportPipeline:
                 name = evidence.metric_name or cls._raw_value(
                     evidence.raw_data or {}, "metric", "name", "description"
                 )
-                val = str(
+                val = (
                     evidence.value
-                    or cls._raw_value(evidence.raw_data or {}, "value", "actual", "actuals", "amount spent")
-                    or ""
+                    if evidence.value is not None
+                    else cls._raw_value(evidence.raw_data or {}, "value", "actual", "actuals", "amount spent")
                 )
-                if not val and evidence.claim:
+                if val is None and evidence.claim:
                     val = evidence.claim.split(":")[-1].strip()
-                if name and val:
-                    clean_name = " ".join(name.strip().rstrip(":").split())
-                    clean_val = " ".join(val.strip().split())
-                    if clean_name not in metrics:
+
+                val_str = str(val).strip() if val is not None else ""
+                if name and val_str and not is_placeholder(val_str):
+                    clean_name = strip_serial_prefixes(name)
+                    clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
+                    clean_val = " ".join(val_str.split())
+                    if clean_name and not is_placeholder(clean_name) and clean_name not in metrics:
                         metrics[clean_name] = clean_val
             elif evidence.evidence_type in (EvidenceType.ACHIEVEMENT, EvidenceType.RESPONSIBILITY):
                 raw = evidence.raw_data or {}
                 actual = cls._raw_value(raw, "actual", "actuals")
                 expected = cls._raw_value(raw, "target", "expected", "expected mar'26")
                 name = cls._raw_value(raw, "responsibility area", "metric", "achievement", "description")
-                if name and actual and (any(c.isdigit() for c in actual) or actual.lower() in ("yes", "no")):
-                    clean_name = " ".join(name.strip().rstrip(":").split())
-                    if expected and expected != actual:
-                        metrics[clean_name] = f"{actual} (Target: {expected})"
-                    elif clean_name not in metrics:
-                        metrics[clean_name] = actual
+                if name and actual is not None and (any(c.isdigit() for c in str(actual)) or str(actual).lower() in ("yes", "no")):
+                    clean_name = strip_serial_prefixes(name)
+                    clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
+                    actual_str = str(actual).strip()
+                    if clean_name and not is_placeholder(clean_name):
+                        if expected and str(expected).strip() != actual_str and not is_placeholder(expected):
+                            metrics[clean_name] = f"{actual_str} (Target: {str(expected).strip()})"
+                        elif clean_name not in metrics:
+                            metrics[clean_name] = actual_str
         return metrics
 
     @classmethod
@@ -693,13 +711,15 @@ class EmployeeReportPipeline:
                 or evidence.claim
             )
             if candidate and len(candidate) > 4:
-                clean = " ".join(candidate.split())
-                key = clean.lower()
-                if key not in seen:
-                    seen.add(key)
-                    work_items.append(clean)
-                    if len(work_items) >= 20:
-                        break
+                clean = strip_serial_prefixes(candidate)
+                clean = " ".join(clean.split())
+                if clean and not is_placeholder(clean) and not clean.isdigit() and len(clean) > 3:
+                    key = clean.lower()
+                    if key not in seen:
+                        seen.add(key)
+                        work_items.append(clean)
+                        if len(work_items) >= 20:
+                            break
         return work_items
 
     @classmethod
@@ -728,9 +748,9 @@ class EmployeeReportPipeline:
             if any(k in status_text for k in ("completed", "done", "implemented", "deployed in production", "live", "in prod")):
                 item_name = cls._raw_value(raw, "project name", "responsibility area", "name of inititative", "task", "description") or evidence.claim
                 if item_name:
-                    clean = cls._clean_title(item_name)
+                    clean = cls._clean_title(strip_serial_prefixes(item_name))
                     key = cls._normalized_text(clean)
-                    if key not in seen and len(clean) > 3:
+                    if key not in seen and len(clean) > 3 and not is_placeholder(clean):
                         seen.add(key)
                         completed.append(clean)
         return completed
@@ -762,9 +782,9 @@ class EmployeeReportPipeline:
             if any(k in status_text for k in ("in progress", "development", "developing", "uat", "solutioning", "underway")):
                 item_name = cls._raw_value(raw, "project name", "responsibility area", "name of inititative", "task", "description") or evidence.claim
                 if item_name:
-                    clean = cls._clean_title(item_name)
+                    clean = cls._clean_title(strip_serial_prefixes(item_name))
                     key = cls._normalized_text(clean)
-                    if key not in seen and len(clean) > 3:
+                    if key not in seen and len(clean) > 3 and not is_placeholder(clean):
                         seen.add(key)
                         progress_items.append(clean)
         return progress_items
@@ -776,9 +796,22 @@ class EmployeeReportPipeline:
 
         for evidence in dataset.evidence:
             if evidence.evidence_type in (EvidenceType.RISK, EvidenceType.HOLD):
-                claim = evidence.claim or cls._raw_value(evidence.raw_data or {}, "challenges", "support required", "comment")
-                if claim:
-                    clean = " ".join(claim.split())
+                raw = evidence.raw_data or {}
+                challenges = cls._raw_value(raw, "challenges", "challenge", "risk", "issue", "problem", "blocker")
+                support = cls._raw_value(raw, "support required", "support needed", "dependency", "mitigation")
+
+                if challenges and support and not is_placeholder(challenges) and not is_placeholder(support):
+                    risk_text = f"{challenges} (Support Required: {support})"
+                elif challenges and not is_placeholder(challenges):
+                    risk_text = challenges
+                elif support and not is_placeholder(support):
+                    risk_text = f"Support Required: {support}"
+                else:
+                    risk_text = evidence.claim or ""
+
+                clean = strip_serial_prefixes(risk_text)
+                clean = " ".join(clean.split())
+                if clean and len(clean) > 3 and not is_placeholder(clean):
                     key = clean.lower()
                     if key not in seen:
                         seen.add(key)
@@ -818,24 +851,20 @@ class EmployeeReportPipeline:
         seen: set[str] = set()
 
         for item in raw_actions:
-            # Split by semicolons, newlines, or numbered items
-            parts = re.split(r"[;\n]|\d+\.\s*", item)
-            for part in parts:
-                clean = " ".join(part.strip().split())
-                if len(clean) < 4 or clean.lower().startswith("in prod"):
-                    continue
-                key = clean.lower()
-                if key in seen:
-                    continue
+            clean = strip_serial_prefixes(item)
+            clean = " ".join(clean.split())
+            if not clean or is_placeholder(clean) or len(clean) < 3:
+                continue
+
+            owner = None
+            if "owner:" in clean.lower():
+                parts = clean.split("owner:", 1)
+                clean = parts[0].strip()
+                owner = parts[1].strip()
+
+            key = clean.lower()
+            if key not in seen:
                 seen.add(key)
-
-                # Infer owner if mentioned
-                owner = ""
-                for name in ("Vishwas", "Vivek", "Sundarajan", "Shwetha", "Bikash", "Pradeep", "Mahendran", "Ravi", "Vinod"):
-                    if name.lower() in clean.lower():
-                        owner = name
-                        break
-
                 actions.append(
                     NextAction(
                         action=clean,
@@ -869,8 +898,9 @@ class EmployeeReportPipeline:
         comp_count = len([p for p in projects if p.lifecycle_stage in {"COMPLETED", "PRODUCTION"}]) or len(completed_work)
         active_count = len([p for p in projects if p.lifecycle_stage in {"DEVELOPMENT", "UAT", "PLANNING", "VENDOR_SELECTION", "TESTING"}]) or len(current_progress)
 
+        proj_word = "strategic project" if len(projects) == 1 else "strategic projects"
         summary_parts = [
-            f"During {period_str}, {employee_name} drove performance across {len(projects)} strategic projects and functional responsibilities."
+            f"During {period_str}, {employee_name} drove performance across {len(projects)} {proj_word} and functional responsibilities."
         ]
 
         if comp_count > 0:
@@ -892,7 +922,8 @@ class EmployeeReportPipeline:
 
         # Risks / governance
         if risks:
-            summary_parts.append(f"Governance focus areas and dependencies require attention on: {risks[0][:90]}.")
+            clean_risk = strip_serial_prefixes(risks[0])
+            summary_parts.append(f"Governance focus areas and dependencies require attention on: {clean_risk[:90]}.")
 
         return " ".join(summary_parts)
 
@@ -919,7 +950,7 @@ class EmployeeReportPipeline:
 
         dev_projects = [p for p in projects if p.lifecycle_stage == "DEVELOPMENT"]
         if dev_projects:
-            changes.append(f"Core Engineering / Development: {len(dev_projects)} initiative(s) under active implementation.")
+            changes.append(f"Active Implementation / In-Progress: {len(dev_projects)} initiative(s) under active execution.")
 
         hold_projects = [p for p in projects if p.lifecycle_stage in {"ON_HOLD", "CANCELLED"}]
         if hold_projects:

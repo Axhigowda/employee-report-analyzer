@@ -342,62 +342,60 @@ def resolve_reporting_periods(
 ) -> list[ResolvedPeriod]:
     """
     Evidence-driven reporting period resolver.
-    Combines filename dates, document periods, and evidence dates into a
+    Combines document content periods, explicit metadata, and filename dates into a
     chronologically sorted, deduplicated list of ResolvedPeriod objects.
     """
-    periods: list[ResolvedPeriod] = []
-    seen: set[str] = set()
+    periods_map: dict[tuple[date, date], ResolvedPeriod] = {}
 
-    # 1. From source files
+    # 1. From explicit evidence periods (HIGHEST precedence: document titles, headers, explicit period cells)
+    if evidence_periods:
+        for start, end, cum in evidence_periods:
+            cum_flag = cum or (start.month != end.month or start.year != end.year)
+            lbl = format_period_label(start, end, cum_flag)
+            key = (start, end)
+            if key not in periods_map:
+                periods_map[key] = ResolvedPeriod(
+                    label=lbl,
+                    start_date=start,
+                    end_date=end,
+                    cumulative=cum_flag,
+                    confidence=0.98,
+                    source="document_content",
+                )
+
+    # 2. From source filenames (FALLBACK / supplementary)
     for f in source_files:
         p = parse_period_from_filename(f)
         if p:
             start, end = p
-            cum = (start.month != end.month or start.year != end.year)
-            lbl = format_period_label(start, end, cum)
-            if lbl not in seen:
-                seen.add(lbl)
-                periods.append(
-                    ResolvedPeriod(
-                        label=lbl,
-                        start_date=start,
-                        end_date=end,
-                        cumulative=cum,
-                        confidence=0.95,
-                        source="filename",
-                    )
-                )
-
-    # 2. From explicit evidence periods
-    if evidence_periods:
-        for start, end, cum in evidence_periods:
-            lbl = format_period_label(start, end, cum)
-            if lbl not in seen:
-                seen.add(lbl)
-                periods.append(
-                    ResolvedPeriod(
-                        label=lbl,
-                        start_date=start,
-                        end_date=end,
-                        cumulative=cum,
-                        confidence=0.90,
-                        source="document_content",
-                    )
+            cum_flag = (start.month != end.month or start.year != end.year)
+            lbl = format_period_label(start, end, cum_flag)
+            key = (start, end)
+            if key not in periods_map:
+                periods_map[key] = ResolvedPeriod(
+                    label=lbl,
+                    start_date=start,
+                    end_date=end,
+                    cumulative=cum_flag,
+                    confidence=0.90,
+                    source="filename",
                 )
 
     # If no periods detected at all, default to latest year baseline
-    if not periods:
-        periods.append(
-            ResolvedPeriod(
-                label="FY 2026-27",
-                start_date=date(2026, 4, 1),
-                end_date=date(2027, 3, 31),
-                cumulative=True,
-                confidence=0.50,
-                source="default_baseline",
-            )
+    if not periods_map:
+        periods_map[(date(2026, 4, 1), date(2027, 3, 31))] = ResolvedPeriod(
+            label="FY 2026-27",
+            start_date=date(2026, 4, 1),
+            end_date=date(2027, 3, 31),
+            cumulative=True,
+            confidence=0.50,
+            source="default_baseline",
         )
 
-    # Sort chronologically by start date
-    periods.sort(key=lambda x: (x.start_date, x.end_date))
-    return periods
+    # Sort chronologically by start date, then end date
+    sorted_periods = sorted(
+        periods_map.values(),
+        key=lambda p: (p.start_date, p.end_date),
+    )
+
+    return sorted_periods
