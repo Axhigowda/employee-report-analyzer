@@ -3,67 +3,61 @@ from datetime import date
 from src.normalization.models import (
     Evidence,
     EvidenceType,
-    EmployeeDataset,
-    NormalizedDocument,
     ReportingPeriod,
 )
-
 from src.normalization.snapshot import (
-    resolve_employee_snapshots,
+    resolve_duplicate_evidence,
 )
 
 
-def make_document(
-    filename,
-    end_date,
-):
-    evidence = Evidence(
-        employee="Binod",
-        evidence_type=EvidenceType.METRIC,
-        claim="Saving: 22.72 Lakh",
-        source_file=filename,
-        source_sheet="Master Data",
-        metric_name="Saving",
+def make_evidence(
+    month: int,
+    source_file: str,
+) -> Evidence:
+    return Evidence(
+        employee="Bikash",
+        evidence_type=EvidenceType.PROJECT,
+        claim="Project: ABC | Status: Completed",
+        source_file=source_file,
         period=ReportingPeriod(
-            start=date(2025, 4, 1),
-            end=end_date,
+            start=date(2026, month, 1),
+            end=date(2026, month, 28),
         ),
-        snapshot=True,
-    )
-
-    return NormalizedDocument(
-        employee="Binod",
-        source_file=filename,
-        source_type="xlsx",
-        reporting_period=ReportingPeriod(
-            start=date(2025, 4, 1),
-            end=end_date,
-        ),
-        evidence=[evidence],
     )
 
 
-def test_latest_snapshot_wins():
-
-    dataset = EmployeeDataset(
-        employee="Binod"
-    )
-
-    dataset.documents = [
-        make_document(
-            "January.xlsx",
-            date(2026, 1, 31),
+def test_same_claim_in_different_periods_is_not_duplicate():
+    evidence = [
+        make_evidence(
+            6,
+            "June-26.xlsx",
         ),
-        make_document(
-            "February.xlsx",
-            date(2026, 2, 28),
+        make_evidence(
+            7,
+            "July-26.xlsx",
         ),
     ]
 
-    result = resolve_employee_snapshots(dataset)
-
-    assert len(result.evidence) == 1
-
-    assert result.evidence[0].source_file == (
-        "February.xlsx"
+    resolved = resolve_duplicate_evidence(
+        evidence
     )
+
+    assert len(resolved) == 2
+
+def test_same_claim_same_period_is_duplicate():
+    evidence = [
+        make_evidence(
+            6,
+            "June-26.xlsx",
+        ),
+        make_evidence(
+            6,
+            "June-26-copy.xlsx",
+        ),
+    ]
+
+    resolved = resolve_duplicate_evidence(
+        evidence
+    )
+
+    assert len(resolved) == 1

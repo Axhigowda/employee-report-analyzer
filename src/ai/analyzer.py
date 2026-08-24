@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any
 
 from .prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
@@ -15,27 +14,23 @@ from .schemas import (
 
 
 class AIAnalysisError(Exception):
-    """Raised when AI analysis cannot be converted into a valid report."""
+    """Raised when AI analysis fails or produces invalid output."""
 
 
 CompletionFunction = Callable[[str, str], str]
 
 
 class EmployeeReportAnalyzer:
-    """
-    Provider-independent employee report analyzer.
 
-    The analyzer is responsible for:
-    - building grounded prompts
-    - invoking an injected completion function
-    - parsing structured AI output
-    - validating/coercing the result into domain dataclasses
-
-    It intentionally knows nothing about a specific AI provider.
-    """
-
-    def __init__(self, completion: CompletionFunction | None = None):
+    def __init__(
+        self,
+        completion: CompletionFunction | None = None,
+    ):
         self.completion = completion
+
+    # ========================================================
+    # PROMPT
+    # ========================================================
 
     def build_prompt(
         self,
@@ -44,14 +39,21 @@ class EmployeeReportAnalyzer:
         file_name: str,
         document_text: str,
     ) -> tuple[str, str]:
+
         if not employee_name.strip():
-            raise ValueError("employee_name must not be empty")
+            raise ValueError(
+                "employee_name must not be empty"
+            )
 
         if not file_name.strip():
-            raise ValueError("file_name must not be empty")
+            raise ValueError(
+                "file_name must not be empty"
+            )
 
         if not document_text.strip():
-            raise ValueError("document_text must not be empty")
+            raise ValueError(
+                "document_text must not be empty"
+            )
 
         user_prompt = USER_PROMPT_TEMPLATE.format(
             employee_name=employee_name,
@@ -59,7 +61,14 @@ class EmployeeReportAnalyzer:
             document_text=document_text,
         )
 
-        return SYSTEM_PROMPT.strip(), user_prompt.strip()
+        return (
+            SYSTEM_PROMPT.strip(),
+            user_prompt.strip(),
+        )
+
+    # ========================================================
+    # ANALYSIS
+    # ========================================================
 
     def analyze(
         self,
@@ -68,14 +77,10 @@ class EmployeeReportAnalyzer:
         file_name: str,
         document_text: str,
     ) -> EmployeeReport:
-        """
-        Analyze a document using the injected completion function.
-        """
 
         if self.completion is None:
             raise AIAnalysisError(
-                "No AI completion function configured. "
-                "Inject a completion function before calling analyze()."
+                "No AI completion function configured."
             )
 
         system_prompt, user_prompt = self.build_prompt(
@@ -85,7 +90,10 @@ class EmployeeReportAnalyzer:
         )
 
         try:
-            response = self.completion(system_prompt, user_prompt)
+            response = self.completion(
+                system_prompt,
+                user_prompt,
+            )
         except Exception as exc:
             raise AIAnalysisError(
                 f"AI completion failed: {exc}"
@@ -98,6 +106,10 @@ class EmployeeReportAnalyzer:
             raw_text=document_text,
         )
 
+    # ========================================================
+    # RESPONSE PARSING
+    # ========================================================
+
     def parse_response(
         self,
         response: str | dict[str, Any],
@@ -106,20 +118,8 @@ class EmployeeReportAnalyzer:
         source_file: str,
         raw_text: str | None = None,
     ) -> EmployeeReport:
-        """
-        Convert an AI JSON response into an EmployeeReport.
-
-        The parser accepts either:
-        - a Python dictionary
-        - a JSON string
-        """
 
         payload = self._decode_response(response)
-
-        if not isinstance(payload, dict):
-            raise AIAnalysisError(
-                "AI response must decode to a JSON object."
-            )
 
         return self._build_report(
             payload,
@@ -132,25 +132,32 @@ class EmployeeReportAnalyzer:
     def _decode_response(
         response: str | dict[str, Any],
     ) -> dict[str, Any]:
+
         if isinstance(response, dict):
             return response
 
         if not isinstance(response, str):
             raise AIAnalysisError(
-                "AI response must be a JSON string or dictionary."
+                "AI response must be JSON."
             )
 
         cleaned = response.strip()
 
         if not cleaned:
-            raise AIAnalysisError("AI response is empty.")
+            raise AIAnalysisError(
+                "AI response must not be empty."
+            )
 
-        # Support common Markdown JSON fencing.
+        # Support:
+        #
+        # ```json
+        # {...}
+        # ```
+        #
         if cleaned.startswith("```"):
             lines = cleaned.splitlines()
 
-            if lines and lines[0].strip().startswith("```"):
-                lines = lines[1:]
+            lines = lines[1:]
 
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
@@ -161,18 +168,23 @@ class EmployeeReportAnalyzer:
                 cleaned = cleaned[4:].strip()
 
         try:
-            decoded = json.loads(cleaned)
+            payload = json.loads(cleaned)
+
         except json.JSONDecodeError as exc:
             raise AIAnalysisError(
-                f"AI response is not valid JSON: {exc}"
+                f"Invalid JSON response: {exc}"
             ) from exc
 
-        if not isinstance(decoded, dict):
+        if not isinstance(payload, dict):
             raise AIAnalysisError(
-                "AI response JSON must contain an object."
+                "AI response must be a JSON object."
             )
 
-        return decoded
+        return payload
+
+    # ========================================================
+    # REPORT CONSTRUCTION
+    # ========================================================
 
     @classmethod
     def _build_report(
@@ -183,44 +195,87 @@ class EmployeeReportAnalyzer:
         source_file: str,
         raw_text: str | None,
     ) -> EmployeeReport:
+
+        source_files = payload.get(
+            "source_files"
+        )
+
+        if not isinstance(source_files, list):
+            source_files = [source_file]
+
+        source_files = [
+            item.strip()
+            for item in source_files
+            if isinstance(item, str)
+            and item.strip()
+        ]
+
+        if not source_files:
+            source_files = [source_file]
+
         return EmployeeReport(
             employee_name=cls._string(
                 payload.get("employee_name"),
-                default=employee_name,
+                employee_name,
             ),
-            source_files=cls._string_list(
-                payload.get("source_files"),
-                default=[source_file],
+            source_files=source_files,
+
+            executive_summary=cls._string(
+                payload.get("executive_summary")
             ),
+
+            key_work=cls._string_list(
+                payload.get("key_work")
+            ),
+
             achievements=cls._achievements(
                 payload.get("achievements")
             ),
+
             responsibilities=cls._responsibilities(
                 payload.get("responsibilities")
             ),
+
             projects=cls._projects(
                 payload.get("projects")
             ),
+
             metrics=cls._metrics(
                 payload.get("metrics")
             ),
+
             risks_or_issues=cls._string_list(
                 payload.get("risks_or_issues")
             ),
+
             next_actions=cls._string_list(
                 payload.get("next_actions")
             ),
+
+            completed_work=cls._string_list(
+                payload.get("completed_work")
+            ),
+
+            current_progress=cls._string_list(
+                payload.get("current_progress")
+            ),
+
+            blockers_or_issues=cls._string_list(
+                payload.get("blockers_or_issues")
+            ),
+
             raw_text=raw_text,
         )
+
+    # ========================================================
+    # SIMPLE VALUES
+    # ========================================================
 
     @staticmethod
     def _string(
         value: Any,
-        *,
-        default: str | None = None,
-    ) -> str | None:
-        if value is None:
-            return default
+        default: str = "",
+    ) -> str:
 
         if isinstance(value, str):
             value = value.strip()
@@ -234,41 +289,70 @@ class EmployeeReportAnalyzer:
     def _string_list(
         cls,
         value: Any,
-        *,
-        default: list[str] | None = None,
     ) -> list[str]:
-        if value is None:
-            return list(default or [])
 
         if not isinstance(value, list):
-            return list(default or [])
+            return []
 
         result: list[str] = []
 
         for item in value:
-            if isinstance(item, str):
-                cleaned = item.strip()
 
-                if cleaned:
-                    result.append(cleaned)
+            if isinstance(item, str):
+                item = item.strip()
+
+                if item:
+                    result.append(item)
 
         return result
+
+    @classmethod
+    def _metrics(
+        cls,
+        value: Any,
+    ) -> dict[str, str]:
+
+        if not isinstance(value, dict):
+            return {}
+
+        result: dict[str, str] = {}
+
+        for key, item in value.items():
+
+            if not isinstance(key, str):
+                continue
+
+            if isinstance(item, str):
+                item = item.strip()
+
+                if item:
+                    result[key.strip()] = item
+
+        return result
+
+    # ========================================================
+    # ACHIEVEMENTS
+    # ========================================================
 
     @classmethod
     def _achievements(
         cls,
         value: Any,
     ) -> list[Achievement]:
+
         if not isinstance(value, list):
             return []
 
         result: list[Achievement] = []
 
         for item in value:
+
             if not isinstance(item, dict):
                 continue
 
-            title = cls._string(item.get("title"))
+            title = cls._string(
+                item.get("title")
+            )
 
             if not title:
                 continue
@@ -290,21 +374,29 @@ class EmployeeReportAnalyzer:
 
         return result
 
+    # ========================================================
+    # RESPONSIBILITIES
+    # ========================================================
+
     @classmethod
     def _responsibilities(
         cls,
         value: Any,
     ) -> list[Responsibility]:
+
         if not isinstance(value, list):
             return []
 
         result: list[Responsibility] = []
 
         for item in value:
+
             if not isinstance(item, dict):
                 continue
 
-            title = cls._string(item.get("title"))
+            title = cls._string(
+                item.get("title")
+            )
 
             if not title:
                 continue
@@ -326,49 +418,57 @@ class EmployeeReportAnalyzer:
 
         return result
 
+    # ========================================================
+    # PROJECTS
+    # ========================================================
+
     @classmethod
     def _projects(
         cls,
         value: Any,
     ) -> list[ProjectSummary]:
+
         if not isinstance(value, list):
             return []
 
         result: list[ProjectSummary] = []
 
+        valid_lifecycle_stages = {
+            "PLANNING",
+            "DEVELOPMENT",
+            "TESTING",
+            "UAT",
+            "DEPLOYMENT",
+            "PRODUCTION",
+            "COMPLETED",
+            "ON_HOLD",
+            "CANCELLED",
+            "UNKNOWN",
+        }
+
         for item in value:
+
             if not isinstance(item, dict):
                 continue
 
-            name = cls._string(item.get("name"))
+            name = cls._string(
+                item.get("name")
+            )
 
             if not name:
                 continue
 
             lifecycle_stage = cls._string(
                 item.get("lifecycle_stage"),
-                default="UNKNOWN",
-            )
-
-            allowed_lifecycle_stages = {
-                "DEVELOPMENT",
-                "UAT",
-                "PRODUCTION",
-                "VENDOR_SELECTION",
-                "PLANNING",
-                "BLOCKED",
-                "COMPLETED",
                 "UNKNOWN",
-            }
+            ).upper()
 
-            lifecycle_stage = (
-                lifecycle_stage.upper()
-                if lifecycle_stage
-                else "UNKNOWN"
-            )
-
-            if lifecycle_stage not in allowed_lifecycle_stages:
+            if lifecycle_stage not in valid_lifecycle_stages:
                 lifecycle_stage = "UNKNOWN"
+
+            next_action = cls._string(
+                item.get("next_action")
+            )
 
             result.append(
                 ProjectSummary(
@@ -389,34 +489,23 @@ class EmployeeReportAnalyzer:
                         item.get("timeline")
                     ),
                     lifecycle_stage=lifecycle_stage,
-                    next_action=cls._string(
-                        item.get("next_action")
+                    next_action=(
+                        next_action
+                        if next_action
+                        else None
                     ),
                 )
             )
 
         return result
 
+    # ========================================================
+    # SERIALIZATION
+    # ========================================================
+
     @staticmethod
-    def _metrics(value: Any) -> dict[str, str]:
-        if not isinstance(value, dict):
-            return {}
+    def as_dict(
+        report: EmployeeReport,
+    ) -> dict[str, Any]:
 
-        result: dict[str, str] = {}
-
-        for key, item in value.items():
-            if not isinstance(key, str):
-                continue
-
-            if isinstance(item, (str, int, float)):
-                result[key.strip()] = str(item)
-
-        return {
-            key: value
-            for key, value in result.items()
-            if key
-        }
-
-    def as_dict(self, report: EmployeeReport) -> dict[str, Any]:
-        """Serialize an EmployeeReport into ordinary Python dictionaries."""
-        return asdict(report)
+        return report.to_dict()

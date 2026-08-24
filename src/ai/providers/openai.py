@@ -28,21 +28,33 @@ EMPLOYEE_REPORT_JSON_SCHEMA = {
                 "type": "string",
             },
         },
+        "executive_summary": {
+            "type": "string",
+        },
+        "key_work": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+
         "achievements": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "title": {"type": "string"},
+                    "title": {
+                        "type": "string",
+                    },
                     "description": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "status": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "metric": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                 },
                 "required": [
@@ -53,68 +65,63 @@ EMPLOYEE_REPORT_JSON_SCHEMA = {
                 ],
             },
         },
+
         "responsibilities": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "title": {"type": "string"},
-                    "description": {
-                        "type": ["string", "null"],
+                    "title": {
+                        "type": "string",
                     },
                     "target": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "actual": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                 },
                 "required": [
                     "title",
-                    "description",
                     "target",
                     "actual",
                 ],
             },
         },
+
         "projects": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "name": {"type": "string"},
+                    "name": {
+                        "type": "string",
+                    },
                     "description": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "status": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "owner": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "department": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "timeline": {
-                        "type": ["string", "null"],
+                        "type": "string",
                     },
                     "lifecycle_stage": {
                         "type": "string",
-                        "enum": [
-                            "DEVELOPMENT",
-                            "UAT",
-                            "PRODUCTION",
-                            "VENDOR_SELECTION",
-                            "PLANNING",
-                            "BLOCKED",
-                            "COMPLETED",
-                            "UNKNOWN",
-                        ],
                     },
                     "next_action": {
-                        "type": ["string", "null"],
+                        "type": [
+                            "string",
+                            "null",
+                        ],
                     },
                 },
                 "required": [
@@ -129,34 +136,64 @@ EMPLOYEE_REPORT_JSON_SCHEMA = {
                 ],
             },
         },
+
         "metrics": {
             "type": "object",
             "additionalProperties": {
                 "type": "string",
             },
         },
+
         "risks_or_issues": {
             "type": "array",
             "items": {
                 "type": "string",
             },
         },
+
         "next_actions": {
             "type": "array",
             "items": {
                 "type": "string",
             },
         },
+
+        "completed_work": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+
+        "current_progress": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
+
+        "blockers_or_issues": {
+            "type": "array",
+            "items": {
+                "type": "string",
+            },
+        },
     },
+
     "required": [
         "employee_name",
         "source_files",
+        "executive_summary",
+        "key_work",
         "achievements",
         "responsibilities",
         "projects",
         "metrics",
         "risks_or_issues",
         "next_actions",
+        "completed_work",
+        "current_progress",
+        "blockers_or_issues",
     ],
 }
 

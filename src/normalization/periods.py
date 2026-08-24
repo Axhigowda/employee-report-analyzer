@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from calendar import monthrange
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 
 
 MONTHS = {
@@ -33,8 +34,26 @@ MONTHS = {
 }
 
 
+MONTH_PATTERN = (
+    r"(?:"
+    r"jan(?:uary)?|"
+    r"feb(?:ruary)?|"
+    r"mar(?:ch)?|"
+    r"apr(?:il)?|"
+    r"may|"
+    r"jun(?:e)?|"
+    r"jul(?:y)?|"
+    r"aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|"
+    r"nov(?:ember)?|"
+    r"dec(?:ember)?"
+    r")"
+)
+
+
 def month_number(value: str) -> int | None:
-    value = value.strip().lower()
+    value = str(value).strip().lower()
 
     for name, number in MONTHS.items():
         if value.startswith(name):
@@ -51,111 +70,255 @@ def month_end(year: int, month: int) -> date:
     )
 
 
-def normalize_year(value: int) -> int:
-    if value < 100:
+def normalize_year(value: int) -> int | None:
+    """
+    Normalize a reporting year.
+
+    Four-digit years are accepted directly.
+
+    Two-digit years are accepted only for 20xx reporting periods.
+    Values such as 10 are rejected because text like "Aug 10"
+    is usually a day reference rather than a reporting year.
+    """
+
+    if value >= 1000:
+        return value
+
+    if 20 <= value <= 99:
         return 2000 + value
 
-    return value
+    return None
+
+
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    text = str(value).strip()
+
+    if not text:
+        return ""
+
+    return re.sub(r"\s+", " ", text)
+
+
+def parse_month_year(
+    text: str,
+) -> tuple[int, int] | None:
+
+    value = _normalize_text(text).lower()
+
+    pattern = rf"""
+        (?<![a-z])
+        ({MONTH_PATTERN})
+        [\s_-]+
+        (20\d{{2}}|\d{{2}})
+        (?!\d)
+    """
+
+    match = re.search(
+        pattern,
+        value,
+        flags=re.IGNORECASE | re.VERBOSE,
+    )
+
+    if not match:
+        return None
+
+    month_name = match.group(1)
+    year_value = int(match.group(2))
+
+    month = month_number(month_name)
+
+    if month is None:
+        return None
+
+    year = normalize_year(year_value)
+
+    if year is None:
+        return None
+
+    return year, month
+
+
+def parse_monthly_period(
+    text: str,
+) -> tuple[date, date] | None:
+
+    parsed = parse_month_year(text)
+
+    if parsed is None:
+        return None
+
+    year, month = parsed
+
+    return (
+        date(year, month, 1),
+        month_end(year, month),
+    )
 
 
 def parse_cumulative_period(
     text: str,
 ) -> tuple[date, date] | None:
     """
-    Parse cumulative financial-year periods such as:
+    Parse a multi-month reporting period.
 
-        April to December -25
-        April to FEB -26
-        April to Jan -26
-        April & December -25
-        April & FEB -26
-        April & Jan -26
+    Supported forms include:
+
+        April to December 2025
+        April-December-2025
+        April to December -2025
+        January to March 2026
+        November to February 2026
+
+    The year belongs to the ending month. If the ending month occurs
+    before the starting month, the period is treated as crossing the
+    calendar year boundary.
     """
 
     if not text:
         return None
 
-    value = str(text).strip().lower()
-    value = re.sub(r"\s+", " ", value)
+    value = _normalize_text(text).lower()
 
     match = re.search(
-        r"april\s*(?:to|&|-)\s*"
-        r"([a-z]+)\s*[-/]?\s*(\d{2,4})",
+        rf"""
+        \b
+        ({MONTH_PATTERN})
+        \s*
+        (?:to|&|-)
+        \s*
+        ({MONTH_PATTERN})
+        \s*
+        [-/]?
+        \s*
+        (20\d{{2}}|\d{{2}})
+        \b
+        """,
         value,
+        flags=re.IGNORECASE | re.VERBOSE,
     )
 
     if not match:
         return None
 
-    end_month_name = match.group(1)
-    year_value = int(match.group(2))
+    start_month_name = match.group(1)
+    end_month_name = match.group(2)
+    year_value = int(match.group(3))
 
-    end_month = month_number(
-        end_month_name
-    )
+    start_month = month_number(start_month_name)
+    end_month = month_number(end_month_name)
 
-    if end_month is None:
+    if start_month is None or end_month is None:
         return None
 
-    end_year = normalize_year(
-        year_value
+    end_year = normalize_year(year_value)
+
+    if end_year is None:
+        return None
+
+    start_year = end_year
+
+    if start_month > end_month:
+        start_year -= 1
+
+    start = date(
+        start_year,
+        start_month,
+        1,
     )
 
-    # April 2025 belongs to FY 2025-26.
-    # Jan/Feb/Mar 2026 therefore belong to the FY
-    # that started in April 2025.
-    start_year = (
-        end_year - 1
-        if end_month < 4
-        else end_year
+    end = month_end(
+        end_year,
+        end_month,
     )
 
-    return (
-        date(start_year, 4, 1),
-        month_end(end_year, end_month),
+    return start, end
+
+
+def parse_explicit_date(
+    value: Any,
+) -> tuple[date, date] | None:
+
+    if isinstance(value, datetime):
+        parsed = value.date()
+        return parsed, parsed
+
+    if isinstance(value, date):
+        return value, value
+
+    text = _normalize_text(value)
+
+    if not text:
+        return None
+
+    formats = (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%m-%d-%Y",
+        "%m/%d/%Y",
     )
+
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(
+                text,
+                fmt,
+            ).date()
+
+            return parsed, parsed
+
+        except ValueError:
+            continue
+
+    return None
+
+
+def parse_period_text(
+    text: str,
+) -> tuple[date, date, bool] | None:
+    """
+    Parse a reporting period from arbitrary text.
+
+    Priority:
+
+        1. cumulative period
+        2. monthly period
+    """
+
+    if not text:
+        return None
+
+    cumulative = parse_cumulative_period(text)
+
+    if cumulative:
+        start, end = cumulative
+
+        return start, end, True
+
+    monthly = parse_monthly_period(text)
+
+    if monthly:
+        start, end = monthly
+
+        return start, end, False
+
+    return None
 
 
 def parse_period_from_filename(
     filename: str,
 ) -> tuple[date, date] | None:
-    """
-    Extract a monthly reporting period from a filename.
 
-    Examples:
-
-        KRA - Jul 26.xlsx
-        KRA - Jun 26.xlsx
-        Monthly Report_Name_Apr_26.xlsx
-        BPL_DST_Monthly_Reports_July-26.xlsx
-    """
-
-    text = filename.lower()
-
-    matches = re.findall(
-        r"(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|"
-        r"oct|nov|dec)[a-z]*"
-        r"[\s_-]*(20\d{2}|\d{2})",
-        text,
-    )
-
-    if not matches:
-        return None
-
-    month_name, year_text = matches[-1]
-
-    month = month_number(
-        month_name
-    )
-
-    if month is None:
-        return None
-
-    year = normalize_year(
-        int(year_text)
-    )
-
-    return (
-        date(year, month, 1),
-        month_end(year, month),
+    return parse_monthly_period(
+        str(filename)
     )

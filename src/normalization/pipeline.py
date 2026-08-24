@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .excel_normalizer import normalize_workbook
+from .excel_normalizer import (
+    detect_period,
+    normalize_workbook,
+)
+
 from .models import (
     EmployeeDataset,
     NormalizedDocument,
     ReportingPeriod,
 )
+
 from .periods import parse_period_from_filename
+
 from .snapshot import resolve_employee_snapshots
 
 
@@ -20,6 +26,7 @@ IGNORED_FILES = {
 SUPPORTED_EXCEL_EXTENSIONS = {
     ".xlsx",
     ".xls",
+    ".xlsm",
 }
 
 
@@ -101,41 +108,33 @@ def _document_sheet_to_dataframe(sheet):
 
 
 def detect_document_period(
-    filename: str,
-    sheets: dict,
+    sheets: dict[str, pd.DataFrame],
+    path: Path,
 ) -> ReportingPeriod | None:
-    """
-    Detect the reporting period.
 
-    Priority:
+    # First: workbook content
+    for _, df in sheets.items():
+        period = detect_period(df)
 
-    1. Period detected from workbook contents.
-    2. Period detected from filename.
-    """
+        if period is not None:
+            return period
 
-    from .excel_normalizer import detect_period
-
-    for df in sheets.values():
-
-        detected = detect_period(df)
-
-        if detected:
-            return detected
-
+    # Second: filename
     filename_period = parse_period_from_filename(
-        filename
+        path.name
     )
 
-    if filename_period is None:
-        return None
+    if filename_period:
+        start, end = filename_period
 
-    start, end = filename_period
+        return ReportingPeriod(
+            start=start,
+            end=end,
+            label=path.name,
+            cumulative=False,
+        )
 
-    return ReportingPeriod(
-        start=start,
-        end=end,
-        label=filename,
-    )
+    return None
 
 
 def normalize_file(
@@ -188,30 +187,34 @@ def normalize_file(
         return None
 
     period = detect_document_period(
-        filename=path.name,
         sheets=sheets,
+        path=path,
     )
+
+    if period is not None:
+        document_period_source = (
+            "workbook"
+            if period.label != path.name
+            else "filename"
+        )
+    else:
+        document_period_source = "unknown"
 
     document = normalize_workbook(
         employee=employee,
         path=path,
         sheets=sheets,
+        period=period,
     )
-
-    # normalize_workbook normally detects the period itself.
-    # The filename is the fallback when workbook contents do not
-    # contain a cumulative period.
-    if document.reporting_period is None:
-        document.reporting_period = period
-
-        if period is not None:
-            for evidence in document.evidence:
-                evidence.period = period
-                evidence.snapshot = True
 
     document.metadata["file_name"] = path.name
     document.metadata["file_size"] = path.stat().st_size
-    document.metadata["period_detected"] = period is not None
+    document.metadata["period_detected"] = (
+            period is not None
+    )
+    document.metadata["period_source"] = (
+        document_period_source
+    )
 
     return document
 
@@ -255,17 +258,16 @@ def normalize_employee(
     # EmployeeDataset deliberately has no metadata field in the
     # current data contract. Keep skipped-file information at the
     # document level and do not mutate the model contract here.
-    for document in dataset.documents:
-        document.metadata.setdefault(
-            "skipped_files",
-            [],
-        )
-
     dataset.rebuild_evidence()
 
-    return resolve_employee_snapshots(
-        dataset
-    )
+    dataset = resolve_employee_snapshots(dataset)
+
+    for document in dataset.documents:
+        document.metadata["skipped_files"] = list(
+            skipped_files
+        )
+
+    return dataset
 
 
 def normalize_all_employees(

@@ -9,6 +9,7 @@ from typing import Any
 class EvidenceType(str, Enum):
     METRIC = "metric"
     ACHIEVEMENT = "achievement"
+    RESPONSIBILITY = "responsibility"
     PROJECT = "project"
     INITIATIVE = "initiative"
     VENDOR = "vendor"
@@ -16,6 +17,7 @@ class EvidenceType(str, Enum):
     HOLD = "hold"
     COMPLIANCE = "compliance"
     DELIVERY = "delivery"
+    RISK = "risk"
     GENERAL = "general"
 
 
@@ -24,6 +26,10 @@ class ReportingPeriod:
     start: date | None = None
     end: date | None = None
     label: str | None = None
+
+    # True when this represents a cumulative/snapshot report
+    # such as "April to June -26".
+    cumulative: bool = False
 
     @property
     def months(self) -> int:
@@ -61,6 +67,10 @@ class Evidence:
     confidence: float = 1.0
 
     snapshot: bool = False
+
+    def __post_init__(self) -> None:
+        if self.period is not None and self.period.cumulative:
+            self.snapshot = True
 
     def normalized_claim(self) -> str:
         return " ".join(self.claim.lower().split())

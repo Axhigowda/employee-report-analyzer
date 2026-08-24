@@ -1,37 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.transformation.monthly_report import (
-    extract_monthly_report,
-    is_monthly_report_dataframe,
-)
+import pandas as pd
 
 from src.ai.analyzer import EmployeeReportAnalyzer
 from src.ai.schemas import (
-    Achievement,
     EmployeeReport,
     ProjectSummary,
-    Responsibility,
 )
-from src.ingestion.extract_excel import (
-    extract_excel_document,
-)
-from src.ingestion.extract_word import (
-    extract_word_document,
-)
+from src.ingestion.extract_excel import extract_excel_document
+from src.ingestion.extract_word import extract_word_document
 from src.models.document import Document
-from src.semantic.extract import (
-    build_profile,
-)
-from src.semantic.models import SemanticProfile
+from src.normalization.document_to_text import document_to_text
 from src.transformation.clean_projects import (
     clean_projects,
     find_project_dataframes,
-)
-from src.reporting.project_report import (
-    build_project_summary,
 )
 
 
@@ -44,22 +30,29 @@ SUPPORTED_DOCUMENT_EXTENSIONS = {
 
 
 class EmployeeReportPipelineError(Exception):
-    """Raised when employee report orchestration fails."""
+    """Raised when employee report processing fails."""
 
 
 class EmployeeReportPipeline:
     """
-    End-to-end employee report orchestration.
+    Simple MVP pipeline:
 
-    Responsibilities:
+        source files
+            ↓
+        document ingestion
+            ↓
+        text normalization
+            ↓
+        combine all reports
+            ↓
+        one AI analysis
+            ↓
+        EmployeeReport
 
-    1. Ingest source documents.
-    2. Normalize documents into canonical text.
-    3. Build deterministic semantic profiles.
-    4. Extract structured projects from supported Excel reports.
-    5. Optionally invoke AI analysis.
-    6. Merge information from multiple source files.
-    7. Produce one EmployeeReport.
+    The pipeline deliberately avoids trying to understand every
+    possible spreadsheet format deterministically.
+
+    The source reports are intentionally allowed to be chaotic.
     """
 
     def __init__(
@@ -70,48 +63,21 @@ class EmployeeReportPipeline:
         self.ai_analyzer = ai_analyzer
 
     # ========================================================
-    # Public API
+    # PUBLIC API
     # ========================================================
 
-    def analyze_employee(
-        self,
-        employee_name: str,
-        files: Iterable[str | Path],
-    ) -> EmployeeReport:
-        """
-        Analyze all supplied documents for one employee.
-        """
+    def analyze_employee(self, employee_name, files):
+        documents = []
 
-        employee_name = employee_name.strip()
-
-        if not employee_name:
-            raise ValueError(
-                "employee_name must not be empty"
-            )
-
-        paths = [
-            Path(file)
-            for file in files
-        ]
-
-        if not paths:
-            raise ValueError(
-                "At least one employee report is required"
-            )
-
-        documents: list[Document] = []
-
-        for path in paths:
+        for file in files:
             try:
-                document = self.ingest_document(path)
+                documents.append(
+                    self.ingest_document(file)
+                )
             except Exception as exc:
                 print(
-                    f"Warning: Skipping invalid source file "
-                    f"{path.name}: {exc}"
+                    f"Warning: skipping {file}: {exc}"
                 )
-                continue
-
-            documents.append(document)
 
         return self.analyze_documents(
             employee_name=employee_name,
@@ -122,9 +88,6 @@ class EmployeeReportPipeline:
         self,
         file_path: str | Path,
     ) -> Document:
-        """
-        Ingest one supported document.
-        """
 
         path = Path(file_path)
 
@@ -140,576 +103,459 @@ class EmployeeReportPipeline:
             ".xls",
             ".xlsm",
         }:
+
             return extract_excel_document(path)
 
         if extension == ".docx":
+
             return extract_word_document(path)
 
-        # Defensive fallback. The extension check above makes
-        # this unreachable.
         raise ValueError(
             f"Unsupported document type: {extension}"
         )
 
     def analyze_documents(
-        self,
-        *,
-        employee_name: str,
-        documents: list[Document],
-    ) -> EmployeeReport:
-        """
-        Analyze already-ingested documents.
-        """
-
-        if not employee_name.strip():
-            raise ValueError(
-                "employee_name must not be empty"
-            )
-
+            self,
+            *,
+            employee_name,
+            documents,
+    ):
         if not documents:
             raise ValueError(
-                "At least one document is required"
+                "No valid employee documents found"
             )
 
-        report = EmployeeReport(
-            employee_name=employee_name,
-        )
+        usable_documents: list[tuple[Document, str]] = []
 
         for document in documents:
-            self._process_document(
-                report,
-                document,
+            text = self._document_text(document)
+
+            if not text.strip():
+                continue
+
+            usable_documents.append(
+                (document, text.strip())
             )
 
-        self._deduplicate_report(report)
+        if not usable_documents:
+            raise ValueError(
+                "Employee documents contain no usable text"
+            )
 
-        # Calculate project metrics once, after all documents
-        # have contributed their projects.
-        self._merge_project_metrics(
-            report,
-            build_project_summary(report.projects),
+        source_files = list(
+            dict.fromkeys(
+                document.file_name
+                for document, _ in usable_documents
+            )
         )
 
-        return report
+        raw_text = "\n\n".join(
+            text
+            for _, text in usable_documents
+        )
+
+        # --------------------------------------------------------
+        # Deterministic mode
+        # --------------------------------------------------------
+
+        if self.ai_analyzer is None:
+            projects = (
+                self._extract_deterministic_projects(
+                    documents
+                )
+            )
+
+            next_actions = [
+                project.next_action
+                for project in projects
+                if project.next_action
+            ]
+
+            metrics = {
+                "total_projects": str(
+                    len(projects)
+                )
+            }
+
+            return EmployeeReport(
+                employee_name=employee_name,
+                source_files=source_files,
+                projects=projects,
+                metrics=metrics,
+                next_actions=next_actions,
+                raw_text=raw_text,
+            )
+
+        # --------------------------------------------------------
+        # AI mode: analyze each source independently
+        # --------------------------------------------------------
+
+        reports: list[EmployeeReport] = []
+
+        for document, text in usable_documents:
+            try:
+                report = self.ai_analyzer.analyze(
+                    employee_name=employee_name,
+                    file_name=document.file_name,
+                    document_text=text,
+                )
+
+
+
+            except Exception as exc:
+
+                raise EmployeeReportPipelineError(
+
+                    f"AI analysis failed for "
+
+                    f"{document.file_name}: {exc}"
+
+                ) from exc
+
+            reports.append(report)
+
+        # --------------------------------------------------------
+        # Merge AI results
+        # --------------------------------------------------------
+
+        merged = self._merge_reports(
+            employee_name=employee_name,
+            reports=reports,
+        )
+
+        merged.source_files = source_files
+        merged.raw_text = raw_text
+
+        return merged
+
+    @classmethod
+    def _extract_deterministic_projects(
+        cls,
+        documents: list[Document],
+    ) -> list[ProjectSummary]:
+
+        projects: list[ProjectSummary] = []
+
+        for document in documents:
+
+            # Project extraction currently applies to Excel
+            # documents. Word documents continue through the
+            # generic/AI analysis path.
+            if document.file_type not in {
+                ".xlsx",
+                ".xls",
+                ".xlsm",
+            }:
+                continue
+
+            sheets = {}
+
+            for sheet in document.sheets:
+
+                dataframe = pd.DataFrame(
+                    sheet.rows
+                )
+
+                if dataframe.empty:
+                    continue
+
+                sheets[sheet.name] = dataframe
+
+            for _, dataframe in find_project_dataframes(
+                sheets
+            ):
+
+                extracted_projects = clean_projects(
+                    dataframe
+                )
+
+                for project in extracted_projects:
+
+                    projects.append(
+                        ProjectSummary(
+                            name=project.name,
+                            description=(
+                                project.activity
+                                or ""
+                            ),
+                            status=project.status,
+                            owner=project.owner,
+                            department=project.department,
+                            timeline=project.timeline,
+                            lifecycle_stage=(
+                                project.lifecycle_stage
+                            ),
+                            next_action=(
+                                project.next_action
+                                if project.next_action
+                                else None
+                            ),
+                        )
+                    )
+
+        return cls._deduplicate_project_summaries(
+            projects
+        )
+
+    @staticmethod
+    def _deduplicate_project_summaries(
+        projects: list[ProjectSummary],
+    ) -> list[ProjectSummary]:
+
+        result: list[ProjectSummary] = []
+        seen: set[str] = set()
+
+        for project in projects:
+
+            key = project.name.strip().lower()
+
+            if not key:
+                continue
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            result.append(project)
+
+        return result
+
+
+    @classmethod
+    def _merge_reports(
+            cls,
+            *,
+            employee_name: str,
+            reports: list[EmployeeReport],
+    ) -> EmployeeReport:
+
+        merged = EmployeeReport(
+            employee_name=employee_name
+        )
+
+        for report in reports:
+
+            # ----------------------------------------------------
+            # Simple lists
+            # ----------------------------------------------------
+
+            merged.key_work.extend(
+                report.key_work
+            )
+
+            merged.completed_work.extend(
+                report.completed_work
+            )
+
+            merged.current_progress.extend(
+                report.current_progress
+            )
+
+            merged.risks_or_issues.extend(
+                report.risks_or_issues
+            )
+
+            merged.next_actions.extend(
+                report.next_actions
+            )
+
+            # ----------------------------------------------------
+            # Achievements
+            # ----------------------------------------------------
+
+            for achievement in report.achievements:
+                if not cls._contains_title(
+                        merged.achievements,
+                        achievement.title,
+                ):
+                    merged.achievements.append(
+                        achievement
+                    )
+
+            # ----------------------------------------------------
+            # Responsibilities
+            # ----------------------------------------------------
+
+            for responsibility in report.responsibilities:
+                if not cls._contains_title(
+                        merged.responsibilities,
+                        responsibility.title,
+                ):
+                    merged.responsibilities.append(
+                        responsibility
+                    )
+
+            # ----------------------------------------------------
+            # Projects
+            # ----------------------------------------------------
+
+            for project in report.projects:
+                existing = cls._find_project(
+                    merged.projects,
+                    project.name,
+                )
+
+                if existing is None:
+                    merged.projects.append(
+                        project
+                    )
+                else:
+                    cls._merge_project(
+                        existing,
+                        project,
+                    )
+
+            # ----------------------------------------------------
+            # Metrics
+            # ----------------------------------------------------
+
+            for key, value in report.metrics.items():
+                if key not in merged.metrics:
+                    merged.metrics[key] = value
+
+            # ----------------------------------------------------
+            # Executive summary
+            # ----------------------------------------------------
+
+            if (
+                    not merged.executive_summary
+                    and report.executive_summary
+            ):
+                merged.executive_summary = (
+                    report.executive_summary
+                )
+
+        return merged
 
     # ========================================================
-    # Document processing
+    # DOCUMENT COMBINATION
     # ========================================================
 
-    def _process_document(
-        self,
-        report: EmployeeReport,
-        document: Document,
+    @staticmethod
+    def _contains_title(
+            items,
+            title: str,
+    ) -> bool:
+
+        normalized = title.strip().lower()
+
+        return any(
+            getattr(item, "title", "").strip().lower()
+            == normalized
+            for item in items
+        )
+
+    @staticmethod
+    def _find_project(
+            projects,
+            name: str,
+    ):
+
+        normalized = name.strip().lower()
+
+        for project in projects:
+            if project.name.strip().lower() == normalized:
+                return project
+
+        return None
+
+    @staticmethod
+    def _merge_project(
+            existing,
+            incoming,
     ) -> None:
-        """
-        Process one document and merge its information into
-        the employee-level report.
-        """
 
-        text = self._document_text(document)
+        if not existing.description:
+            existing.description = incoming.description
 
-        if not text.strip():
-            return
+        if not existing.status:
+            existing.status = incoming.status
 
-        report.source_files.append(
-            document.file_name
+        if not existing.owner:
+            existing.owner = incoming.owner
+
+        if not existing.department:
+            existing.department = incoming.department
+
+        if not existing.timeline:
+            existing.timeline = incoming.timeline
+
+        if (
+                existing.lifecycle_stage == "UNKNOWN"
+                and incoming.lifecycle_stage != "UNKNOWN"
+        ):
+            existing.lifecycle_stage = (
+                incoming.lifecycle_stage
+            )
+
+        if (
+                existing.next_action is None
+                and incoming.next_action is not None
+        ):
+            existing.next_action = (
+                incoming.next_action
+            )
+
+
+    @classmethod
+    def _combine_documents(
+        cls,
+        documents: list[Document],
+    ) -> tuple[str, list[str]]:
+
+        sections: list[str] = []
+        source_files: list[str] = []
+
+        for document in documents:
+
+            text = cls._document_text(document)
+
+            if not text.strip():
+                continue
+
+            source_files.append(
+                document.file_name
+            )
+
+            sections.append(
+                cls._format_source(
+                    document.file_name,
+                    text,
+                )
+            )
+
+        combined_text = "\n\n".join(
+            sections
         )
 
-        # Preserve the normalized source material.
-        if report.raw_text:
-            report.raw_text += (
-                "\n\n"
-                + self._source_separator(
-                    document.file_name
-                )
-                + "\n"
-                + text
-            )
-        else:
-            report.raw_text = (
-                self._source_separator(
-                    document.file_name
-                )
-                + "\n"
-                + text
-            )
-
-        # Always perform deterministic semantic processing.
-        profile = build_profile(text)
-
-        self._merge_semantic_information(
-            report,
-            profile,
+        return (
+            combined_text,
+            source_files,
         )
-
-        # Excel project extraction remains deterministic.
-        if document.file_type in {
-            ".xlsx",
-            ".xls",
-            ".xlsm",
-        }:
-            self._extract_excel_projects(
-                report,
-                document,
-            )
-
-            self._extract_monthly_reports(
-                report,
-                document,
-            )
-
-        # AI is an optional enrichment stage.
-        if self.ai_analyzer is not None:
-            self._run_ai_analysis(
-                report,
-                document,
-                text,
-            )
 
     @staticmethod
     def _document_text(
         document: Document,
     ) -> str:
-        """
-        Return canonical document text.
-
-        If an ingestion implementation has already populated
-        Document.text, preserve it. Otherwise normalize the
-        document structure.
-        """
 
         if document.text:
             return document.text
 
-        from src.normalization.document_to_text import (
-            document_to_text,
+        return document_to_text(
+            document
         )
 
-        return document_to_text(document)
-
     @staticmethod
-    def _source_separator(
+    def _format_source(
         file_name: str,
-    ) -> str:
-        return (
-            f"===== SOURCE: {file_name} ====="
-        )
-
-    # ========================================================
-    # Semantic processing
-    # ========================================================
-
-    @staticmethod
-    def _merge_semantic_information(
-        report: EmployeeReport,
-        profile: SemanticProfile,
-    ) -> None:
-        """
-        Use deterministic semantic information to identify
-        high-level business concepts.
-
-        Semantic terms are not directly exposed as final
-        employee-report fields. They provide a deterministic
-        enrichment layer for later AI/reporting stages.
-        """
-
-        # At this stage we intentionally don't manufacture
-        # achievements or responsibilities from individual
-        # tokens. The profile is consumed as evidence by the
-        # pipeline and retained through raw_text.
-
-        # This method is intentionally kept as a boundary for
-        # future semantic enrichment such as:
-        #
-        # - project similarity
-        # - duplicate detection
-        # - responsibility clustering
-        # - skill/topic grouping
-        #
-        # without contaminating the EmployeeReport schema
-        # with implementation-specific semantic structures.
-
-    # ========================================================
-    # Deterministic project extraction
-    # ========================================================
-
-    def _extract_excel_projects(
-            self,
-            report: EmployeeReport,
-            document: Document,
-    ) -> None:
-        """
-        Extract structured projects from an Excel document.
-
-        Excel workbooks may contain many different kinds of
-        worksheets. Only worksheets matching the supported
-        project schema are passed to clean_projects().
-
-        Non-project worksheets are intentionally ignored by the
-        deterministic project extractor and remain available
-        through the normalized document text for later semantic
-        or AI analysis.
-        """
-
-        from src.ingestion.extract_excel import (
-            extract_excel_file,
-        )
-
-        sheets = extract_excel_file(
-            document.source_path
-        )
-
-        project_sheets = find_project_dataframes(
-            sheets
-        )
-
-        if not project_sheets:
-            return
-
-        all_projects = []
-
-        for _, dataframe in project_sheets:
-
-            projects = clean_projects(
-                dataframe
-            )
-
-            if not projects:
-                continue
-
-            all_projects.extend(
-                projects
-            )
-
-        for project in all_projects:
-            report.projects.append(
-                ProjectSummary(
-                    name=(
-                            project.name
-                            or f"Project {project.project_id}"
-                    ),
-                    description=self._project_description(
-                        project
-                    ),
-                    status=project.status,
-                    owner=project.owner,
-                    department=project.department,
-                    timeline=project.timeline,
-                    lifecycle_stage=project.lifecycle_stage,
-                    next_action=project.next_action,
-                )
-            )
-
-        # Explicit next actions from all project records.
-        for project in all_projects:
-
-            if project.next_action:
-                report.next_actions.append(
-                    project.next_action
-                )
-
-        # Explicit project activities/details can be useful
-        # as achievements only when the source actually marks
-        # them as completed.
-        for project in all_projects:
-
-            for detail in project.details:
-
-                if not detail.status:
-                    continue
-
-                status = detail.status.lower()
-
-                if "completed" in status:
-                    report.achievements.append(
-                        Achievement(
-                            title=detail.description,
-                            description=(
-                                f"Project: "
-                                f"{project.name or 'Unknown'}"
-                            ),
-                            status=detail.status,
-                        )
-                    )
-
-    def _extract_monthly_reports(
-            self,
-            report: EmployeeReport,
-            document: Document,
-    ) -> None:
-        """
-        Extract structured information from monthly performance
-        report worksheets.
-        """
-
-        from src.ingestion.extract_excel import (
-            extract_excel_file,
-        )
-
-        sheets = extract_excel_file(
-            document.source_path
-        )
-
-        for dataframe in sheets.values():
-
-            if not is_monthly_report_dataframe(
-                    dataframe
-            ):
-                continue
-
-            extracted = extract_monthly_report(
-                dataframe
-            )
-
-            report.achievements.extend(
-                extracted["achievements"]
-            )
-
-            report.responsibilities.extend(
-                extracted["responsibilities"]
-            )
-
-            report.projects.extend(
-                extracted["projects"]
-            )
-
-            report.risks_or_issues.extend(
-                extracted["risks_or_issues"]
-            )
-
-
-    @staticmethod
-    def _project_description(
-        project,
-    ) -> str | None:
-        descriptions = [
-            detail.description
-            for detail in project.details
-            if detail.description
-        ]
-
-        if not descriptions:
-            return project.activity
-
-        return " | ".join(
-            descriptions
-        )
-
-    @staticmethod
-    def _merge_project_metrics(
-            report: EmployeeReport,
-            summary: dict,
-    ) -> None:
-        total = summary.get(
-            "total_projects"
-        )
-
-        if total is not None:
-            report.metrics["total_projects"] = str(
-                total
-            )
-
-        next_actions = summary.get(
-            "projects_with_next_actions"
-        )
-
-        if next_actions is not None:
-            report.metrics["projects_with_next_actions"] = str(
-                next_actions
-            )
-
-        unknown = summary.get(
-            "unknown_lifecycle_projects"
-        )
-
-        if unknown is not None:
-            report.metrics["unknown_lifecycle_projects"] = str(
-                unknown
-            )
-
-        lifecycle_counts = summary.get(
-            "lifecycle_counts",
-            {},
-        )
-
-        for stage, count in lifecycle_counts.items():
-            report.metrics[
-                f"lifecycle_{stage.lower()}"
-            ] = str(count)
-
-    # ========================================================
-    # AI processing
-    # ========================================================
-
-    def _run_ai_analysis(
-        self,
-        report: EmployeeReport,
-        document: Document,
         text: str,
-    ) -> None:
-        """
-        Run AI analysis for one document and merge the result.
-        """
+    ) -> str:
 
-        if self.ai_analyzer is None:
-            return
+        separator = "=" * 72
 
-        try:
-            ai_report = self.ai_analyzer.analyze(
-                employee_name=report.employee_name,
-                file_name=document.file_name,
-                document_text=text,
-            )
-        except Exception as exc:
-            raise EmployeeReportPipelineError(
-                f"AI analysis failed for "
-                f"{document.file_name}: {exc}"
-            ) from exc
-
-        self._merge_ai_report(
-            report,
-            ai_report,
+        return (
+            f"{separator}\n"
+            f"SOURCE FILE: {file_name}\n"
+            f"{separator}\n\n"
+            f"{text.strip()}"
         )
-
-    @staticmethod
-    def _merge_ai_report(
-            target: EmployeeReport,
-            source: EmployeeReport,
-    ) -> None:
-        target.achievements.extend(
-            source.achievements
-        )
-
-        target.responsibilities.extend(
-            source.responsibilities
-        )
-
-        existing_project_names = {
-            project.name.strip().lower()
-            for project in target.projects
-            if project.name
-        }
-
-        for project in source.projects:
-            normalized_name = project.name.strip().lower()
-
-            if normalized_name in existing_project_names:
-                continue
-
-            target.projects.append(project)
-            existing_project_names.add(
-                normalized_name
-            )
-
-        for key, value in source.metrics.items():
-            target.metrics.setdefault(
-                key,
-                value,
-            )
-
-        target.risks_or_issues.extend(
-            source.risks_or_issues
-        )
-
-        target.next_actions.extend(
-            source.next_actions
-        )
-
-    # ========================================================
-    # Deduplication
-    # ========================================================
-
-    @staticmethod
-    def _deduplicate_report(
-        report: EmployeeReport,
-    ) -> None:
-        """
-        Remove duplicate information while preserving order.
-        """
-
-        report.source_files = (
-            EmployeeReportPipeline._unique_strings(
-                report.source_files
-            )
-        )
-
-        report.risks_or_issues = (
-            EmployeeReportPipeline._unique_strings(
-                report.risks_or_issues
-            )
-        )
-
-        report.next_actions = (
-            EmployeeReportPipeline._unique_strings(
-                report.next_actions
-            )
-        )
-
-        report.achievements = (
-            EmployeeReportPipeline._unique_dataclass_items(
-                report.achievements,
-                key=lambda item: (
-                    item.title.lower(),
-                    (item.status or "").lower(),
-                ),
-            )
-        )
-
-        report.responsibilities = (
-            EmployeeReportPipeline._unique_dataclass_items(
-                report.responsibilities,
-                key=lambda item: (
-                    item.title.lower(),
-                ),
-            )
-        )
-
-        report.projects = (
-            EmployeeReportPipeline._unique_dataclass_items(
-                report.projects,
-                key=lambda item: (
-                    item.name.lower(),
-                ),
-            )
-        )
-
-    @staticmethod
-    def _unique_strings(
-        values: list[str],
-    ) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-
-        for value in values:
-            normalized = value.strip().lower()
-
-            if not normalized:
-                continue
-
-            if normalized in seen:
-                continue
-
-            seen.add(normalized)
-            result.append(value.strip())
-
-        return result
-
-    @staticmethod
-    def _unique_dataclass_items(
-        values,
-        *,
-        key,
-    ):
-        seen = set()
-        result = []
-
-        for value in values:
-            identity = key(value)
-
-            if identity in seen:
-                continue
-
-            seen.add(identity)
-            result.append(value)
-
-        return result

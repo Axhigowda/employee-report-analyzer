@@ -5,12 +5,23 @@ from collections import defaultdict
 from .models import Evidence, EmployeeDataset
 
 
+def period_key(evidence: Evidence) -> tuple:
+    if not evidence.period:
+        return (None, None)
+
+    return (
+        evidence.period.start,
+        evidence.period.end,
+    )
+
+
 def evidence_key(evidence: Evidence) -> tuple:
     return (
         evidence.employee.lower().strip(),
         evidence.evidence_type.value,
         (evidence.metric_name or "").lower().strip(),
         evidence.normalized_claim(),
+        period_key(evidence),
     )
 
 
@@ -45,14 +56,17 @@ def resolve_duplicate_evidence(
 
         winner = candidates[0]
 
-        # Preserve the strongest/latest evidence.
-        winner.raw_data = {
-            **winner.raw_data,
-            "_duplicate_sources": [
-                candidate.source_file
-                for candidate in candidates[1:]
-            ],
-        }
+        duplicate_sources = [
+            candidate.source_file
+            for candidate in candidates[1:]
+            if candidate.source_file != winner.source_file
+        ]
+
+        if duplicate_sources:
+            winner.raw_data = {
+                **winner.raw_data,
+                "_duplicate_sources": duplicate_sources,
+            }
 
         resolved.append(winner)
 

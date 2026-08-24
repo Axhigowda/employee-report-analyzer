@@ -20,20 +20,6 @@ class EmptyExcelFileError(ValueError):
 
 
 def extract_excel_file(file_path):
-    """
-    Read every sheet from an Excel workbook.
-
-    This function is retained for the existing deterministic
-    project-analysis pipeline.
-
-    Returns:
-        dict:
-            {
-                "Sheet1": dataframe,
-                "Sheet2": dataframe
-            }
-    """
-
     file_path = Path(file_path)
 
     if not file_path.exists():
@@ -42,6 +28,12 @@ def extract_excel_file(file_path):
         )
 
     if file_path.suffix.lower() not in SUPPORTED_EXCEL_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported Excel file type: "
+            f"{file_path.suffix}"
+        )
+
+    if file_path.stat().st_size == 0:
         raise EmptyExcelFileError(
             f"Excel file is empty: {file_path}"
         )
@@ -51,7 +43,6 @@ def extract_excel_file(file_path):
     sheets = {}
 
     for sheet_name in workbook.sheet_names:
-
         dataframe = pd.read_excel(
             file_path,
             sheet_name=sheet_name,
