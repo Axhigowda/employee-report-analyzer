@@ -161,7 +161,18 @@ class EmployeeReportPipeline:
 
     @staticmethod
     def _clean_title(title: str) -> str:
-        clean = re.sub(r"^\d+[\.\)]\s*", "", title.strip())
+        clean = title.strip()
+        # If title contains formatted pipe fields like "sl no: 1 | kra title: My Project | ...", extract "My Project"
+        if " | " in clean:
+            for part in clean.split(" | "):
+                part_lower = part.lower().strip()
+                for prefix in ("kra title:", "project name:", "initiative name:", "project:", "initiative:", "title:"):
+                    if part_lower.startswith(prefix):
+                        matched = part[len(prefix):].strip()
+                        if len(matched) >= 3:
+                            return " ".join(matched.split())
+        clean = re.sub(r"^sl[\.\s]*no[\.\s]*:?\s*\d+\s*\|\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"^\d+[\.\)]\s*", "", clean.strip())
         clean = re.sub(r"^[•\-*]\s*", "", clean)
         clean = " ".join(clean.split())
         return clean
@@ -227,6 +238,37 @@ class EmployeeReportPipeline:
             if results:
                 return results
 
+        # Check for semicolon-separated multi-project list (when at least 3 distinct titles exist)
+        if ";" in name and len(numbered_matches) < 2:
+            parts = [p.strip() for p in name.split(";") if len(p.strip()) >= 3]
+            if len(parts) >= 3 and any(len(p.split()) <= 8 for p in parts):
+                for part in parts:
+                    clean_sub_title = cls._clean_title(part)
+                    if len(clean_sub_title) >= 3:
+                        stage = cls._infer_project_lifecycle(f"{status} {clean_sub_title}")
+                        prov = Provenance(
+                            source_file=str(evidence_item.source_file or ""),
+                            sheet_name=str(evidence_item.source_sheet or ""),
+                            row_number=evidence_item.source_row,
+                            source_text=part[:200],
+                            extraction_method="multi_project_segmentation_semicolon",
+                            confidence=0.88,
+                        )
+                        results.append(
+                            ProjectSummary(
+                                name=clean_sub_title,
+                                description=description if len(parts) == 1 else "",
+                                status=status,
+                                owner=owner,
+                                department=department,
+                                timeline=timeline,
+                                lifecycle_stage=stage,
+                                evidence=[prov],
+                            )
+                        )
+                if results:
+                    return results
+
         # Single project fallback
         clean_name = cls._clean_title(name)
         stage = cls._infer_project_lifecycle(f"{status} {description}")
@@ -284,15 +326,28 @@ class EmployeeReportPipeline:
             if not name:
                 claim = str(evidence.claim or "")
                 lower_claim = claim.lower()
-                for marker in ("project name:", "name of inititative:", "initiative:"):
+                for marker in (
+                    "project name:",
+                    "name of inititative:",
+                    "initiative name:",
+                    "initiative:",
+                    "kra title:",
+                    "kra:",
+                    "title:",
+                ):
                     if marker in lower_claim:
                         start = lower_claim.index(marker) + len(marker)
                         remainder = claim[start:]
                         separators = (
                             " | it initiated projects:",
+                            " | activity task:",
+                            " | activity:",
+                            " | task:",
+                            " | strategic theme:",
+                            " | time line:",
+                            " | timeline:",
                             " | department:",
                             " | status:",
-                            " | timeline:",
                             " | owner:",
                             " | poc:",
                         )
@@ -478,10 +533,16 @@ class EmployeeReportPipeline:
             elif not title and evidence.claim:
                 title = evidence.claim
 
-            if not title:
+            if re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", title.lower().strip()):
+                sub_title = cls._raw_value(raw, "kra title", "activity task", "task", "details", "description", "goal description")
+                if sub_title:
+                    title = sub_title
+
+            clean_t = cls._clean_title(title)
+            if not clean_t or len(clean_t) < 3 or re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", clean_t.lower().strip()):
                 continue
 
-            key = " ".join(f"{title.lower()} {description[:30].lower()}".split())
+            key = " ".join(f"{clean_t.lower()} {description[:30].lower()}".split())
             if key in seen:
                 continue
             seen.add(key)
@@ -500,8 +561,8 @@ class EmployeeReportPipeline:
 
             achievements.append(
                 Achievement(
-                    title=cls._clean_title(title),
-                    description=description,
+                    title=clean_t,
+                    description=description if description != title else "",
                     status=status,
                     metric=metric,
                     evidence=[prov],
@@ -528,11 +589,13 @@ class EmployeeReportPipeline:
                     "100% on-time",
                 )
             ):
-                item_title = cls._raw_value(raw, "project name", "task", "responsibility area", "description") or evidence.claim
+                item_title = cls._raw_value(raw, "kra title", "project name", "project", "task", "responsibility area", "description") or evidence.claim
                 if not item_title or len(item_title) < 4:
                     continue
 
-                clean = cls._clean_title(item_title.split("|")[0])
+                clean = cls._clean_title(item_title)
+                if not clean or len(clean) < 3 or re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", clean.lower().strip()):
+                    continue
                 key = clean.lower()
                 if key not in seen:
                     seen.add(key)
