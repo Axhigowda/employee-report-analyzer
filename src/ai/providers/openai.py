@@ -75,6 +75,9 @@ EMPLOYEE_REPORT_JSON_SCHEMA = {
                     "title": {
                         "type": "string",
                     },
+                    "description": {
+                        "type": "string",
+                    },
                     "target": {
                         "type": "string",
                     },
@@ -84,6 +87,7 @@ EMPLOYEE_REPORT_JSON_SCHEMA = {
                 },
                 "required": [
                     "title",
+                    "description",
                     "target",
                     "actual",
                 ],

@@ -4,7 +4,9 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from .context import build_employee_ai_context
 from .prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from src.normalization.models import EmployeeDataset
 from .schemas import (
     Achievement,
     EmployeeReport,
@@ -33,11 +35,13 @@ class EmployeeReportAnalyzer:
     # ========================================================
 
     def build_prompt(
-        self,
-        *,
-        employee_name: str,
-        file_name: str,
-        document_text: str,
+            self,
+            *,
+            employee_name: str,
+            source_files: list[str] | tuple[str, ...] | None = None,
+            context: str | None = None,
+            file_name: str | None = None,
+            document_text: str | None = None,
     ) -> tuple[str, str]:
 
         if not employee_name.strip():
@@ -45,20 +49,63 @@ class EmployeeReportAnalyzer:
                 "employee_name must not be empty"
             )
 
-        if not file_name.strip():
+        # ----------------------------------------------------
+        # Backward compatibility
+        #
+        # Older callers provide:
+        #
+        #   file_name
+        #   document_text
+        #
+        # New callers provide:
+        #
+        #   source_files
+        #   context
+        #
+        # Prefer the new normalized interface when supplied.
+        # ----------------------------------------------------
+
+        if source_files is None:
+            if file_name is not None:
+                source_files = [file_name]
+            else:
+                source_files = []
+
+        if context is None:
+            if document_text is not None:
+                context = document_text
+            else:
+                context = ""
+
+        normalized_files = [
+            item.strip()
+            for item in source_files
+            if isinstance(item, str)
+               and item.strip()
+        ]
+
+        if not normalized_files:
             raise ValueError(
-                "file_name must not be empty"
+                "source_files/file_name must not be empty"
             )
 
-        if not document_text.strip():
+        if not context.strip():
             raise ValueError(
-                "document_text must not be empty"
+                "context/document_text must not be empty"
             )
+
+        source_files_text = ", ".join(
+            normalized_files
+        )
 
         user_prompt = USER_PROMPT_TEMPLATE.format(
             employee_name=employee_name,
-            file_name=file_name,
-            document_text=document_text,
+            source_files=source_files_text,
+            context=context,
+
+            # Legacy template fields.
+            file_name=source_files_text,
+            document_text=context,
         )
 
         return (
@@ -70,12 +117,12 @@ class EmployeeReportAnalyzer:
     # ANALYSIS
     # ========================================================
 
-    def analyze(
+    def analyze_context(
         self,
         *,
         employee_name: str,
-        file_name: str,
-        document_text: str,
+        source_files: list[str] | tuple[str, ...],
+        context: str,
     ) -> EmployeeReport:
 
         if self.completion is None:
@@ -85,8 +132,8 @@ class EmployeeReportAnalyzer:
 
         system_prompt, user_prompt = self.build_prompt(
             employee_name=employee_name,
-            file_name=file_name,
-            document_text=document_text,
+            source_files=source_files,
+            context=context,
         )
 
         try:
@@ -99,11 +146,62 @@ class EmployeeReportAnalyzer:
                 f"AI completion failed: {exc}"
             ) from exc
 
+        source_file = (
+            source_files[0]
+            if source_files
+            else ""
+        )
+
         return self.parse_response(
             response,
             employee_name=employee_name,
-            source_file=file_name,
-            raw_text=document_text,
+            source_file=source_file,
+            raw_text=context,
+        )
+
+    def analyze_dataset(
+        self,
+        dataset: EmployeeDataset,
+    ) -> EmployeeReport:
+
+        if not dataset.employee.strip():
+            raise ValueError(
+                "dataset.employee must not be empty"
+            )
+
+        context = build_employee_ai_context(
+            dataset
+        )
+
+        source_files = dataset.source_files
+
+        if not source_files:
+            source_files = sorted(
+                {
+                    evidence.source_file
+                    for evidence in dataset.evidence
+                    if evidence.source_file.strip()
+                }
+            )
+
+        return self.analyze_context(
+            employee_name=dataset.employee,
+            source_files=source_files,
+            context=context,
+        )
+
+    def analyze(
+        self,
+        *,
+        employee_name: str,
+        file_name: str,
+        document_text: str,
+    ) -> EmployeeReport:
+
+        return self.analyze_context(
+            employee_name=employee_name,
+            source_files=[file_name],
+            context=document_text,
         )
 
     # ========================================================
