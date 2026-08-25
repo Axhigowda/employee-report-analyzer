@@ -599,8 +599,22 @@ class EmployeeReportPipeline:
                         existing.description = incoming.description
                     if incoming.target:
                         existing.target = incoming.target
-                    if incoming.actual:
+
+                    # Accumulate standalone monthly currency figures if both are distinct monthly figures
+                    inc_curr = re.search(r"rs\.?\s*([0-9.]+)\s*(crores?|cr|lakhs?|l)?", str(incoming.actual or ""), re.IGNORECASE)
+                    ext_curr = re.search(r"rs\.?\s*([0-9.]+)\s*(crores?|cr|lakhs?|l)?", str(existing.actual or ""), re.IGNORECASE)
+                    if inc_curr and ext_curr:
+                        unit = inc_curr.group(2) or ext_curr.group(2) or "Crores"
+                        v_inc = float(inc_curr.group(1))
+                        v_ext = float(ext_curr.group(1))
+                        if v_inc != v_ext:
+                            tot_v = round(v_ext + v_inc, 2)
+                            existing.actual = f"Rs. {tot_v:.2f} {unit.capitalize()}"
+                        else:
+                            existing.actual = incoming.actual
+                    elif incoming.actual:
                         existing.actual = incoming.actual
+
                     matched = True
                     break
 
@@ -884,6 +898,19 @@ class EmployeeReportPipeline:
                             metrics[clean_name] = f"{act_str} (Target: {str(expected).strip()})"
                         else:
                             metrics[clean_name] = act_str
+
+        # Synchronize with deduplicated responsibilities
+        resp_list = cls._responsibilities_from_dataset(dataset)
+        for r in resp_list:
+            if r.actual and r.title:
+                clean_name = strip_serial_prefixes(r.title)
+                clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
+                if clean_name and is_valid_metric_name(clean_name) and is_numeric_metric_value(r.actual):
+                    if r.target and r.target != r.actual:
+                        metrics[clean_name] = f"{r.actual} (Target: {r.target})"
+                    else:
+                        metrics[clean_name] = r.actual
+
         return metrics
 
     @classmethod
