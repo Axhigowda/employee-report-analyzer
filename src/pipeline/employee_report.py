@@ -179,6 +179,10 @@ class EmployeeReportPipeline:
         clean = re.sub(r"^sl[\.\s]*no[\.\s]*:?\s*\d+\s*\|\s*", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"^\d+[\.\)]\s*", "", clean.strip())
         clean = re.sub(r"^[•\-*]\s*", "", clean)
+        # Strip trailing timestamps or dates merged into titles
+        clean = re.sub(r"\s*;\s*\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}(?::\d{2})?)?", "", clean)
+        clean = re.sub(r"\s*;\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", "", clean)
+        clean = re.sub(r"\s+00:00:00\b", "", clean)
         clean = " ".join(clean.split())
         return clean
 
@@ -452,27 +456,119 @@ class EmployeeReportPipeline:
         return deduped
 
     @classmethod
+    def _clean_achievement_metric(cls, metric_val: Any, status_val: Any) -> str | None:
+        if metric_val is None or is_placeholder(metric_val):
+            return None
+        m_str = " ".join(str(metric_val).strip().split())
+        if not m_str:
+            return None
+
+        s_str = " ".join(str(status_val or "").strip().split())
+        if m_str.lower() == s_str.lower():
+            return None
+
+        status_words = {
+            "done", "completed", "in progress", "inprogress", "progress", "active",
+            "wip", "on hold", "hold", "cancelled", "open", "closed", "yes", "no",
+            "std", "std.", "na", "n/a", "nil", "none"
+        }
+        if m_str.lower() in status_words:
+            return None
+
+        # Must contain quantitative info (digit, %, currency, ratio)
+        if not (any(c.isdigit() for c in m_str) or "%" in m_str or "rs" in m_str.lower() or "$" in m_str):
+            return None
+
+        # Reject date strings
+        if re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)'?\d{2,4}", m_str, re.IGNORECASE):
+            return None
+        if re.search(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$", m_str):
+            return None
+
+        return m_str
+
+    @classmethod
+    def _deduplicate_achievements(cls, achievements: list[Achievement]) -> list[Achievement]:
+        deduped: list[Achievement] = []
+        for incoming in achievements:
+            inc_title_norm = cls._normalized_text(incoming.title)
+            inc_desc_norm = cls._normalized_text(incoming.description or "")
+            matched = False
+
+            for existing in deduped:
+                ext_title_norm = cls._normalized_text(existing.title)
+                ext_desc_norm = cls._normalized_text(existing.description or "")
+
+                title_match = (
+                    ext_title_norm == inc_title_norm
+                    or (len(ext_title_norm) > 12 and len(inc_title_norm) > 12 and (
+                        ext_title_norm.startswith(inc_title_norm) or inc_title_norm.startswith(ext_title_norm)
+                    ))
+                )
+                desc_match = (
+                    ext_desc_norm == inc_desc_norm
+                    or not ext_desc_norm
+                    or not inc_desc_norm
+                )
+
+                if title_match and desc_match:
+                    if incoming.evidence:
+                        existing.evidence.extend(incoming.evidence)
+                    if len(incoming.description or "") > len(existing.description or ""):
+                        existing.description = incoming.description
+                    if incoming.metric and not existing.metric:
+                        existing.metric = incoming.metric
+                    matched = True
+                    break
+
+            if not matched:
+                deduped.append(incoming)
+
+        return deduped
+
+    @classmethod
+    def _deduplicate_responsibilities(cls, responsibilities: list[Responsibility]) -> list[Responsibility]:
+        deduped: list[Responsibility] = []
+        for incoming in responsibilities:
+            inc_title_norm = cls._normalized_text(incoming.title)
+            matched = False
+
+            for existing in deduped:
+                ext_title_norm = cls._normalized_text(existing.title)
+                if ext_title_norm == inc_title_norm:
+                    if incoming.evidence:
+                        existing.evidence.extend(incoming.evidence)
+                    if len(incoming.description or "") > len(existing.description or ""):
+                        existing.description = incoming.description
+                    if incoming.target and not existing.target:
+                        existing.target = incoming.target
+                    if incoming.actual and not existing.actual:
+                        existing.actual = incoming.actual
+                    matched = True
+                    break
+
+            if not matched:
+                deduped.append(incoming)
+
+        return deduped
+
+    @classmethod
     def _responsibilities_from_dataset(cls, dataset: EmployeeDataset) -> list[Responsibility]:
         responsibilities: list[Responsibility] = []
-        seen: set[str] = set()
 
         for evidence in dataset.evidence:
             raw = evidence.raw_data or {}
-            is_resp = (
-                evidence.evidence_type == EvidenceType.RESPONSIBILITY
-                or "task" in raw
-                or "responsibility area" in raw
-                or "responsibility" in raw
-            )
-            if not is_resp:
-                continue
+            # Only genuine responsibility evidence or checklists, never duplicate achievement section rows
+            if evidence.evidence_type != EvidenceType.RESPONSIBILITY:
+                if not (("task" in raw or "responsibility" in raw) and evidence.evidence_type != EvidenceType.ACHIEVEMENT):
+                    continue
 
             title = cls._raw_value(
                 raw,
                 "task",
-                "responsibility area",
-                "kra title",
                 "responsibility",
+                "kra title",
+                "responsibility area",
                 "area",
                 "title",
             )
@@ -490,11 +586,6 @@ class EmployeeReportPipeline:
             clean_title_str = cls._clean_title(strip_serial_prefixes(title))
             if not clean_title_str or len(clean_title_str) < 2 or is_placeholder(clean_title_str):
                 continue
-
-            key = " ".join(f"{clean_title_str.lower()} {(description or '')[:30].lower()}".split())
-            if key in seen:
-                continue
-            seen.add(key)
 
             target = cls._raw_value(raw, "target", "expected", "expected mar'26", "measure of success")
             actual = cls._raw_value(raw, "actual", "actuals", "status", "achievement")
@@ -518,12 +609,11 @@ class EmployeeReportPipeline:
                     evidence=[prov],
                 )
             )
-        return responsibilities
+        return cls._deduplicate_responsibilities(responsibilities)
 
     @classmethod
     def _achievements_from_dataset(cls, dataset: EmployeeDataset) -> list[Achievement]:
         achievements: list[Achievement] = []
-        seen: set[str] = set()
 
         # 1. From explicit achievement evidence
         for evidence in dataset.evidence:
@@ -531,36 +621,43 @@ class EmployeeReportPipeline:
                 continue
 
             raw = evidence.raw_data or {}
-            title = cls._raw_value(
-                raw,
-                "achievement",
-                "title",
-                "responsibility area",
-                "project",
-                "name of inititative",
-            )
-            description = cls._raw_value(raw, "description", "details")
-            if not title and description:
-                title = description
-            elif not title and evidence.claim:
-                title = evidence.claim
+            resp_area = cls._raw_value(raw, "responsibility area", "project", "name of inititative")
+            desc = cls._raw_value(raw, "description", "details", "goal description")
+            ach_field = cls._raw_value(raw, "achievement", "title", "name of the initiative", "initiative", "task", "activity task")
 
-            if re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", title.lower().strip()):
-                sub_title = cls._raw_value(raw, "kra title", "activity task", "task", "details", "description", "goal description")
-                if sub_title:
-                    title = sub_title
+            title = ""
+            if ach_field and len(ach_field) > 3 and not re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", ach_field.lower().strip()):
+                title = ach_field
+            elif resp_area and desc:
+                resp_lower = resp_area.lower().strip()
+                generic_categories = {
+                    "app support, enhancement", "general", "operations", "monthly report",
+                    "kra", "achievements", "major achievements", "miscellaneous"
+                }
+                if resp_lower in generic_categories:
+                    first_clause = re.split(r"[;\.\n]", desc)[0].strip()
+                    title = first_clause if (8 <= len(first_clause) <= 85) else " ".join(desc.split()[:10])
+                elif len(resp_area) <= 12 and not any(k in resp_lower for k in ("audit", "arc", "capex", "project", "spices", "pulses", "rice", "training")):
+                    first_clause = re.split(r"[;\.\n]", desc)[0].strip()
+                    first_part = first_clause if len(first_clause) <= 60 else " ".join(first_clause.split()[:8])
+                    title = f"{resp_area}: {first_part}"
+                else:
+                    title = resp_area
+            elif resp_area:
+                title = resp_area
+            elif desc:
+                first_clause = re.split(r"[;\.\n]", desc)[0].strip()
+                title = first_clause if (8 <= len(first_clause) <= 85) else desc[:80]
+            elif evidence.claim:
+                title = evidence.claim
 
             clean_t = cls._clean_title(title)
             if not clean_t or len(clean_t) < 3 or re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", clean_t.lower().strip()):
                 continue
 
-            key = " ".join(f"{clean_t.lower()} {description[:30].lower()}".split())
-            if key in seen:
-                continue
-            seen.add(key)
-
             status = cls._raw_value(raw, "status", "actuals", "actual") or "Completed"
-            metric = cls._raw_value(raw, "metric", "actual", "actuals", "expected")
+            raw_metric = cls._raw_value(raw, "metric", "actual", "actuals", "expected")
+            metric = cls._clean_achievement_metric(raw_metric, status)
 
             prov = Provenance(
                 source_file=str(evidence.source_file or ""),
@@ -574,7 +671,7 @@ class EmployeeReportPipeline:
             achievements.append(
                 Achievement(
                     title=clean_t,
-                    description=description if description != title else "",
+                    description=desc if desc != clean_t else "",
                     status=status,
                     metric=metric,
                     evidence=[prov],
@@ -608,34 +705,76 @@ class EmployeeReportPipeline:
                 clean = cls._clean_title(item_title)
                 if not clean or len(clean) < 3 or re.match(r"^sl[\.\s]*no[\.\s]*:?\s*\d+$", clean.lower().strip()):
                     continue
-                key = clean.lower()
-                if key not in seen:
-                    seen.add(key)
-                    prov = Provenance(
-                        source_file=str(evidence.source_file or ""),
-                        sheet_name=str(evidence.source_sheet or ""),
-                        row_number=evidence.source_row,
-                        source_text=claim_text[:200],
-                        extraction_method="inferred_achievement",
+
+                status = "Completed"
+                raw_metric = cls._raw_value(raw, "metric", "actual", "actuals")
+                metric = cls._clean_achievement_metric(raw_metric, status)
+
+                prov = Provenance(
+                    source_file=str(evidence.source_file or ""),
+                    sheet_name=str(evidence.source_sheet or ""),
+                    row_number=evidence.source_row,
+                    source_text=claim_text[:200],
+                    extraction_method="inferred_achievement",
+                    confidence=0.85,
+                )
+                achievements.append(
+                    Achievement(
+                        title=clean,
+                        description=cls._raw_value(raw, "description", "details", "status") or clean,
+                        status=status,
+                        metric=metric,
+                        impact="Operational Milestone / Delivery Completion",
+                        evidence=[prov],
                         confidence=0.85,
                     )
-                    achievements.append(
-                        Achievement(
-                            title=clean,
-                            description=cls._raw_value(raw, "description", "details", "status") or clean,
-                            status="Completed",
-                            metric=cls._raw_value(raw, "metric", "actual", "actuals"),
-                            impact="Operational Milestone / Delivery Completion",
-                            evidence=[prov],
-                            confidence=0.85,
-                        )
-                    )
+                )
 
-        return achievements
+        return cls._deduplicate_achievements(achievements)
 
     @classmethod
     def _metrics_from_dataset(cls, dataset: EmployeeDataset) -> dict[str, str]:
         metrics: dict[str, str] = {}
+
+        def is_valid_metric_name(name: str) -> bool:
+            clean = " ".join(name.split())
+            if not clean or len(clean) > 100 or len(clean.split()) > 18:
+                return False
+            if any(p in clean for p in (";", "\n")):
+                return False
+            if re.search(r"\.\s+[A-Z]", clean):
+                return False
+            lower = clean.lower()
+            narrative_markers = {
+                "we have", "were using", "in order to", "because", "conducted in",
+                "facilitating", "introduced", "initiated", "earlier", "to enhance",
+                "will be", "should be", "has been", "is being", "responsibility area",
+                "app support", "vendor visit", "bhoomi poojan", "cs floated", "po created",
+                "shared d365", "cs done", "spoke to", "completed 25-26", "system becomes",
+                "clean audit", "lead the deployment", "faster processes"
+            }
+            if any(m in lower for m in narrative_markers):
+                return False
+            return True
+
+        def is_numeric_metric_value(val: str) -> bool:
+            v = val.strip()
+            if not v:
+                return False
+            if re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)'?\d{2,4}", v, re.IGNORECASE):
+                return False
+            if re.search(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$", v):
+                return False
+            if re.search(r"^\d{4}-\d{2}-\d{2}", v):
+                return False
+            if re.search(r"(expected|delivery|bhoomi|discussion|review|completed with|licens|vendor|shared)", v, re.IGNORECASE):
+                return False
+            if len(v.split()) > 4 and not any(k in v.lower() for k in ("target:", "rs", "km", "hours", "days", "spend")):
+                return False
+            if any(c.isdigit() for c in v):
+                return True
+            return False
+
         for evidence in dataset.evidence:
             if evidence.evidence_type == EvidenceType.METRIC:
                 name = evidence.metric_name or cls._raw_value(
@@ -654,22 +793,23 @@ class EmployeeReportPipeline:
                     clean_name = strip_serial_prefixes(name)
                     clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
                     clean_val = " ".join(val_str.split())
-                    if clean_name and not is_placeholder(clean_name) and clean_name not in metrics:
-                        metrics[clean_name] = clean_val
+                    if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(clean_name) and is_numeric_metric_value(clean_val):
+                        if clean_name not in metrics:
+                            metrics[clean_name] = clean_val
             elif evidence.evidence_type in (EvidenceType.ACHIEVEMENT, EvidenceType.RESPONSIBILITY):
                 raw = evidence.raw_data or {}
                 actual = cls._raw_value(raw, "actual", "actuals")
                 expected = cls._raw_value(raw, "target", "expected", "expected mar'26")
-                name = cls._raw_value(raw, "responsibility area", "metric", "achievement", "description")
-                if name and actual is not None and (any(c.isdigit() for c in str(actual)) or str(actual).lower() in ("yes", "no")):
+                name = cls._raw_value(raw, "metric", "responsibility area", "achievement", "description")
+                if name and actual is not None:
                     clean_name = strip_serial_prefixes(name)
                     clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
-                    actual_str = str(actual).strip()
-                    if clean_name and not is_placeholder(clean_name):
-                        if expected and str(expected).strip() != actual_str and not is_placeholder(expected):
-                            metrics[clean_name] = f"{actual_str} (Target: {str(expected).strip()})"
+                    act_str = str(actual).strip()
+                    if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(act_str) and is_numeric_metric_value(act_str):
+                        if expected and str(expected).strip() != act_str and not is_placeholder(str(expected)):
+                            metrics[clean_name] = f"{act_str} (Target: {str(expected).strip()})"
                         elif clean_name not in metrics:
-                            metrics[clean_name] = actual_str
+                            metrics[clean_name] = act_str
         return metrics
 
     @classmethod

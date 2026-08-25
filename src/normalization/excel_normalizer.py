@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -123,8 +123,12 @@ def clean_value(value: Any) -> Any:
     if isinstance(value, float) and math.isnan(value):
         return None
 
-    if isinstance(value, pd.Timestamp):
-        return value.to_pydatetime()
+    if isinstance(value, (pd.Timestamp, datetime, date)):
+        if isinstance(value, (datetime, pd.Timestamp)):
+            if value.hour == 0 and value.minute == 0 and value.second == 0:
+                return value.strftime("%Y-%m-%d")
+            return value.strftime("%Y-%m-%d %H:%M")
+        return str(value)
 
     return value
 
@@ -1157,12 +1161,32 @@ def merge_records(
 
     merged = dict(previous)
 
+    entity_title_keys = {
+        "responsibility area",
+        "project name",
+        "project",
+        "title",
+        "name of inititative",
+        "initiative",
+        "kra title",
+    }
+
     for key, value in continuation.items():
 
         if is_placeholder(value):
             continue
 
         if is_serial_header(key):
+            continue
+
+        norm_key = normalize_header(key)
+
+        # Do not append dates or timestamps into title/entity fields
+        is_date_str = bool(
+            re.match(r"^\d{4}-\d{2}-\d{2}", value.strip())
+            or re.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", value.strip())
+        )
+        if norm_key in entity_title_keys and is_date_str:
             continue
 
         if key not in merged:

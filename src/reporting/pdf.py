@@ -21,6 +21,7 @@ from reportlab.platypus import (
 )
 
 from src.ai.schemas import EmployeeReport
+from src.normalization.excel_normalizer import is_placeholder
 
 
 class NumberedCanvas(canvas.Canvas):
@@ -241,7 +242,11 @@ def export_report_pdf(
     active_count = len([p for p in report.projects if p.lifecycle_stage in {"DEVELOPMENT", "UAT", "PLANNING", "VENDOR_SELECTION", "TESTING"}])
     completed_count = len([p for p in report.projects if p.lifecycle_stage in {"COMPLETED", "PRODUCTION"}])
     ach_count = len(report.achievements)
-    metrics_count = len(report.metrics)
+    valid_metrics = {
+        k: v for k, v in (report.metrics or {}).items()
+        if k != "total_projects" and not is_placeholder(v)
+    }
+    metrics_count = len(valid_metrics)
     risks_count = len(report.risks_or_issues)
 
     card_data = [
@@ -394,7 +399,7 @@ def export_report_pdf(
     # -------------------------------------------------------------
     # 6. Key Metrics Table
     # -------------------------------------------------------------
-    if report.metrics:
+    if valid_metrics:
         story.append(KeepTogether([
             Paragraph("Key Operational & Business Metrics", styles["SectionHeading"]),
             Spacer(1, 2),
@@ -405,32 +410,29 @@ def export_report_pdf(
             [Paragraph(f"<b>{h}</b>", styles["TableHeader"]) for h in metric_headers]
         ]
 
-        for k, v in sorted(report.metrics.items()):
-            if k == "total_projects":
-                continue
+        for k, v in sorted(valid_metrics.items()):
             metric_rows.append([
                 Paragraph(k, styles["TableCellBold"]),
                 Paragraph(str(v), styles["TableCell"]),
                 Paragraph("Performance KPI", styles["TableCell"]),
             ])
 
-        if len(metric_rows) > 1:
-            m_table = Table(metric_rows, colWidths=[180, 180, 144], repeatRows=1)
-            m_table.setStyle(
-                TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-                    ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#f1f5f9")),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#ffffff"), colors.HexColor("#f8fafc")]),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ])
-            )
-            story.append(m_table)
-            story.append(Spacer(1, 14))
+        m_table = Table(metric_rows, colWidths=[180, 180, 144], repeatRows=1)
+        m_table.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#334155")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#f1f5f9")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#ffffff"), colors.HexColor("#f8fafc")]),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ])
+        )
+        story.append(m_table)
+        story.append(Spacer(1, 14))
 
     # -------------------------------------------------------------
     # 7. Achievements & Responsibilities

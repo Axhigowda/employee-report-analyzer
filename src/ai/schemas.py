@@ -32,12 +32,13 @@ class Achievement:
     confidence: float = 1.0
 
     def __post_init__(self) -> None:
-        self.title = str(self.title).strip()
-        self.description = str(self.description).strip()
-        self.status = str(self.status).strip()
-        self.metric = str(self.metric).strip()
-        self.date_period = str(self.date_period).strip()
-        self.impact = str(self.impact).strip()
+        self.title = str(self.title or "").strip()
+        self.description = str(self.description or "").strip()
+        self.status = str(self.status or "").strip()
+        m = str(self.metric or "").strip()
+        self.metric = "" if m.lower() in ("none", "null", "nil", "na", "n/a") else m
+        self.date_period = str(self.date_period or "").strip()
+        self.impact = str(self.impact or "").strip()
 
         if not self.title:
             raise ValueError("Achievement title must not be empty")
@@ -57,11 +58,14 @@ class Responsibility:
     confidence: float = 1.0
 
     def __post_init__(self) -> None:
-        self.title = str(self.title).strip()
-        self.description = str(self.description).strip()
-        self.target = str(self.target).strip()
-        self.actual = str(self.actual).strip()
-        self.status = str(self.status).strip()
+        self.title = str(self.title or "").strip()
+        self.description = str(self.description or "").strip()
+        t = str(self.target or "").strip()
+        self.target = "" if t.lower() in ("none", "null", "nil", "na", "n/a") else t
+        a = str(self.actual or "").strip()
+        self.actual = "" if a.lower() in ("none", "null", "nil", "na", "n/a") else a
+        s = str(self.status or "").strip()
+        self.status = "" if s.lower() in ("none", "null", "nil", "na", "n/a") else s
 
         if not self.title:
             raise ValueError("Responsibility title must not be empty")
