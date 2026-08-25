@@ -846,10 +846,21 @@ class EmployeeReportPipeline:
                 return False
             return True
 
+        def round_float_val(v_str: str) -> str:
+            m = re.match(r"^([0-9]+\.[0-9]+)$", v_str.strip())
+            if m:
+                flt = float(m.group(1))
+                if flt >= 100 or len(m.group(1).split(".")[1]) > 4:
+                    return f"{flt:.2f}"
+                return str(round(flt, 4))
+            return v_str
+
         def is_numeric_metric_value(val: str) -> bool:
             v = val.strip()
             if not v:
                 return False
+            if v.lower() in ("on time", "on-time", "std"):
+                return True
             if re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)'?\d{2,4}", v, re.IGNORECASE):
                 return False
             if re.search(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$", v):
@@ -887,7 +898,10 @@ class EmployeeReportPipeline:
                     clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
                     clean_val = " ".join(val_str.split())
                     if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(clean_name) and is_numeric_metric_value(clean_val):
-                        metrics[clean_name] = clean_val
+                        formatted_val = round_float_val(clean_val)
+                        if clean_name in metrics and metrics[clean_name] in ("On Time", "on time") and formatted_val == "0":
+                            continue
+                        metrics[clean_name] = formatted_val
             elif evidence.evidence_type in (EvidenceType.ACHIEVEMENT, EvidenceType.RESPONSIBILITY):
                 raw = evidence.raw_data or {}
                 actual = cls._raw_value(raw, "actual", "actuals", "actuals for jan 26", "actuals for dec 25", "actuals for nov 25")
@@ -898,10 +912,11 @@ class EmployeeReportPipeline:
                     clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
                     act_str = str(actual).strip()
                     if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(act_str) and is_numeric_metric_value(act_str):
+                        formatted_act = round_float_val(act_str)
                         if expected and str(expected).strip() != act_str and not is_placeholder(str(expected)):
-                            metrics[clean_name] = f"{act_str} (Target: {str(expected).strip()})"
+                            metrics[clean_name] = f"{formatted_act} (Target: {str(expected).strip()})"
                         else:
-                            metrics[clean_name] = act_str
+                            metrics[clean_name] = formatted_act
 
         # Synchronize with deduplicated responsibilities
         resp_list = cls._responsibilities_from_dataset(dataset)
@@ -910,10 +925,11 @@ class EmployeeReportPipeline:
                 clean_name = strip_serial_prefixes(r.title)
                 clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
                 if clean_name and is_valid_metric_name(clean_name) and is_numeric_metric_value(r.actual):
+                    formatted_act = round_float_val(r.actual)
                     if r.target and r.target != r.actual:
-                        metrics[clean_name] = f"{r.actual} (Target: {r.target})"
+                        metrics[clean_name] = f"{formatted_act} (Target: {r.target})"
                     else:
-                        metrics[clean_name] = r.actual
+                        metrics[clean_name] = formatted_act
 
         return metrics
 

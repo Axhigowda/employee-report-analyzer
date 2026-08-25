@@ -378,7 +378,6 @@ def is_summary_or_metadata_row(
     normalized = normalize_header(text)
 
     blocked_prefixes = (
-        "total",
         "grand total",
         "sub total",
         "subtotal",
@@ -395,6 +394,9 @@ def is_summary_or_metadata_row(
             for value in blocked_prefixes
         )
     ):
+        return True
+
+    if normalized.startswith("total") and not any(k in normalized for k in ("total purchase", "total capex", "total saving", "total productivity", "total projects", "total spend")):
         return True
 
     return False
