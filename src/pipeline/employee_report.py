@@ -865,9 +865,13 @@ class EmployeeReportPipeline:
             return False
 
         for evidence in dataset.evidence:
+            raw = evidence.raw_data or {}
+            if any(k in raw for k in ("name of inititative", "project name", "current status_2", "start date", "end date")):
+                continue
+
             if evidence.evidence_type == EvidenceType.METRIC:
                 name = evidence.metric_name or cls._raw_value(
-                    evidence.raw_data or {}, "metric", "name", "description"
+                    raw, "metric", "name", "description"
                 )
                 val = (
                     evidence.value

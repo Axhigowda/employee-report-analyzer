@@ -1495,7 +1495,8 @@ def _record_to_evidence(
         None,
     )
 
-    if desc_val and any(
+    is_initiative_row = any(k in record for k in ("name of inititative", "project name", "start date", "current status", "current status_2", "mention"))
+    if desc_val and not is_initiative_row and any(
         term in desc_val.lower()
         for term in (
             "total purchase",
