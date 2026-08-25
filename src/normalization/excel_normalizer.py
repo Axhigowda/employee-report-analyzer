@@ -1365,9 +1365,10 @@ def normalize_sheet(
         # Determine whether this row starts a new logical record or
         # continues the previous one.
         is_continuation = False
+        kra_metric_keys = ("expected", "actuals", "expected mar 26", "expected mar'26", "actuals for dec 25", "actuals for jan 26", "actuals for nov 25", "target", "measurement")
         has_sub_item_metrics = bool(
-            any(k in record for k in ("expected", "actuals", "expected mar 26", "actual", "status", "target", "measurement"))
-            and any(record.get(k) for k in ("expected", "actuals", "expected mar 26", "actual", "status", "target", "measurement") if k in record)
+            any(k in record for k in kra_metric_keys)
+            and any(record.get(k) for k in kra_metric_keys if k in record)
         )
         has_desc = bool(record.get("description") or record.get("detailed description with initial status") or record.get("task"))
 

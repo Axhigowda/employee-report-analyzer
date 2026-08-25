@@ -177,12 +177,18 @@ def normalize_employee(
     extractor=None,
 ) -> EmployeeDataset:
     """
-    Normalize all usable reports for one employee.
+    Normalize all usable reports for one employee in chronological order.
     """
     dataset = EmployeeDataset(employee=employee)
     skipped_files: list[str] = []
 
-    for path in files:
+    def _file_sort_key(p: Path):
+        period = parse_period_from_filename(p.name)
+        return str(period[0]) if period else p.name
+
+    sorted_files = sorted(files, key=_file_sort_key)
+
+    for path in sorted_files:
         if not should_process(path):
             continue
 

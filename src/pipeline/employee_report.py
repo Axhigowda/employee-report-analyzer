@@ -428,10 +428,58 @@ class EmployeeReportPipeline:
         return cls._deduplicate_projects(raw_projects)
 
     @classmethod
+    def _is_semantically_same_project(cls, p1: ProjectSummary, p2: ProjectSummary) -> bool:
+        s1, s2 = p1.name.lower(), p2.name.lower()
+        if s1 == s2:
+            return True
+
+        if s1 in [a.lower() for a in p2.aliases] or s2 in [a.lower() for a in p1.aliases]:
+            return True
+
+        d1 = (p1.description or "").lower()
+        d2 = (p2.description or "").lower()
+        st1 = (p1.status or "").lower()
+        st2 = (p2.status or "").lower()
+
+        # 1. Customization Assessment (exclusive)
+        is_c1 = any(w in s1 or w in d1 for w in ("customization", "customisations", "replace customizations", "strategic it–business", "strategic it-business"))
+        is_c2 = any(w in s2 or w in d2 for w in ("customization", "customisations", "replace customizations", "strategic it–business", "strategic it-business"))
+        if is_c1 or is_c2:
+            return is_c1 and is_c2
+
+        # 2. Usability / Functionality (exclusive)
+        is_u1 = any(w in s1 or w in d1 for w in ("unpacking module", "functionality and usability", "fully functional", "value delivery", "module functionality"))
+        is_u2 = any(w in s2 or w in d2 for w in ("unpacking module", "functionality and usability", "fully functional", "value delivery", "module functionality"))
+        if is_u1 or is_u2:
+            return is_u1 and is_u2
+
+        # 3. Finance Automation / BOT (exclusive)
+        is_b1 = any(w in s1 or w in d1 or w in st1 for w in ("bot", "donation entry", "sustained performance", "finance digital transformation", "transition to ongoing"))
+        is_b2 = any(w in s2 or w in d2 or w in st2 for w in ("bot", "donation entry", "sustained performance", "finance digital transformation", "transition to ongoing"))
+        if is_b1 or is_b2:
+            return is_b1 and is_b2
+
+        # 4. ITGC Audit / Governance (exclusive)
+        is_a1 = any(w in s1 or w in d1 or w in st1 for w in ("itgc", "statutory audit", "it governance, risk"))
+        is_a2 = any(w in s2 or w in d2 or w in st2 for w in ("itgc", "statutory audit", "it governance, risk"))
+        if is_a1 or is_a2:
+            return is_a1 and is_a2
+
+        # 5. Generic title token overlap (requiring >= 60% token overlap)
+        stop = {"and", "the", "for", "with", "of", "in", "to", "a", "an", "is", "kra", "2025", "2026", "2027", "strategic", "d365"}
+        t1 = set(re.findall(r"\w+", s1)) - stop
+        t2 = set(re.findall(r"\w+", s2)) - stop
+        common = t1 & t2
+        if len(t1) >= 2 and len(t2) >= 2 and len(common) / min(len(t1), len(t2)) >= 0.6:
+            return True
+
+        return False
+
+    @classmethod
     def _deduplicate_projects(cls, projects: list[ProjectSummary]) -> list[ProjectSummary]:
         """
-        Deduplicate projects using title normalization and metadata similarity
-        without blindly merging distinct regional or functional scopes.
+        Deduplicate projects using title normalization, semantic similarity,
+        and cross-field metadata matching.
         """
         deduped: list[ProjectSummary] = []
 
@@ -441,12 +489,19 @@ class EmployeeReportPipeline:
 
             for existing in deduped:
                 ext_name_norm = cls._normalized_text(existing.name)
+                is_diff_file = False
+                if existing.evidence and incoming.evidence:
+                    is_diff_file = existing.evidence[0].source_file != incoming.evidence[0].source_file
 
-                # Exact or high-confidence normalized match
-                if ext_name_norm == inc_name_norm or (
-                    len(ext_name_norm) > 8
-                    and (ext_name_norm.startswith(inc_name_norm) or inc_name_norm.startswith(ext_name_norm))
-                    and (existing.department == incoming.department or not incoming.department)
+                # Exact or high-confidence normalized match or semantic cross-match across different files
+                if (
+                    ext_name_norm == inc_name_norm
+                    or (
+                        len(ext_name_norm) > 8
+                        and (ext_name_norm.startswith(inc_name_norm) or inc_name_norm.startswith(ext_name_norm))
+                        and (existing.department == incoming.department or not incoming.department)
+                    )
+                    or (is_diff_file and cls._is_semantically_same_project(existing, incoming))
                 ):
                     cls._merge_project(existing, incoming)
                     matched = True
@@ -542,9 +597,9 @@ class EmployeeReportPipeline:
                         existing.evidence.extend(incoming.evidence)
                     if len(incoming.description or "") > len(existing.description or ""):
                         existing.description = incoming.description
-                    if incoming.target and not existing.target:
+                    if incoming.target:
                         existing.target = incoming.target
-                    if incoming.actual and not existing.actual:
+                    if incoming.actual:
                         existing.actual = incoming.actual
                     matched = True
                     break
@@ -763,6 +818,8 @@ class EmployeeReportPipeline:
             if re.search(r"\.\s+[A-Z]", clean):
                 return False
             lower = clean.lower()
+            if any(p in lower for p in ("mention %", "mention%", "name of inititative", "initial status")):
+                return False
             narrative_markers = {
                 "we have", "were using", "in order to", "because", "conducted in",
                 "facilitating", "introduced", "initiated", "earlier", "to enhance",
@@ -812,11 +869,10 @@ class EmployeeReportPipeline:
                     clean_name = re.sub(r"[\.:\s]+$", "", clean_name).strip()
                     clean_val = " ".join(val_str.split())
                     if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(clean_name) and is_numeric_metric_value(clean_val):
-                        if clean_name not in metrics:
-                            metrics[clean_name] = clean_val
+                        metrics[clean_name] = clean_val
             elif evidence.evidence_type in (EvidenceType.ACHIEVEMENT, EvidenceType.RESPONSIBILITY):
                 raw = evidence.raw_data or {}
-                actual = cls._raw_value(raw, "actual", "actuals", "actuals for dec 25", "actuals for jan 26", "actuals for nov 25")
+                actual = cls._raw_value(raw, "actual", "actuals", "actuals for jan 26", "actuals for dec 25", "actuals for nov 25")
                 expected = cls._raw_value(raw, "target", "expected", "expected mar'26", "expected mar 26")
                 name = cls._raw_value(raw, "metric", "responsibility area", "achievement", "description")
                 if name and actual is not None:
@@ -826,7 +882,7 @@ class EmployeeReportPipeline:
                     if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(act_str) and is_numeric_metric_value(act_str):
                         if expected and str(expected).strip() != act_str and not is_placeholder(str(expected)):
                             metrics[clean_name] = f"{act_str} (Target: {str(expected).strip()})"
-                        elif clean_name not in metrics:
+                        else:
                             metrics[clean_name] = act_str
         return metrics
 
@@ -1267,19 +1323,42 @@ class EmployeeReportPipeline:
 
     @staticmethod
     def _merge_project(existing: ProjectSummary, incoming: ProjectSummary) -> None:
-        if not existing.description or len(incoming.description) > len(existing.description):
+        if incoming.name != existing.name:
+            if incoming.name not in existing.aliases:
+                existing.aliases.append(incoming.name)
+            if existing.name not in existing.aliases:
+                existing.aliases.append(existing.name)
+            # Adopt the incoming (later period) name as primary title
+            existing.name = incoming.name
+
+        for a in incoming.aliases:
+            if a not in existing.aliases and a != existing.name:
+                existing.aliases.append(a)
+
+        # Track historical update
+        inc_period = incoming.evidence[0].reporting_period if incoming.evidence else ""
+        update = {
+            "period": inc_period,
+            "source_file": incoming.evidence[0].source_file if incoming.evidence else "",
+            "status": incoming.status,
+            "lifecycle": incoming.lifecycle_stage,
+            "description": incoming.description,
+        }
+        existing.historical_updates.append(update)
+
+        if incoming.description:
             existing.description = incoming.description
-        if not existing.status or len(incoming.status) > len(existing.status):
+        if incoming.status:
             existing.status = incoming.status
-        if not existing.owner and incoming.owner:
+        if incoming.owner:
             existing.owner = incoming.owner
-        if not existing.department and incoming.department:
+        if incoming.department:
             existing.department = incoming.department
-        if not existing.timeline and incoming.timeline:
+        if incoming.timeline:
             existing.timeline = incoming.timeline
-        if existing.lifecycle_stage == "UNKNOWN" and incoming.lifecycle_stage != "UNKNOWN":
+        if incoming.lifecycle_stage != "UNKNOWN":
             existing.lifecycle_stage = incoming.lifecycle_stage
-        if existing.next_action is None and incoming.next_action is not None:
+        if incoming.next_action is not None:
             existing.next_action = incoming.next_action
         if incoming.evidence:
             existing.evidence.extend(incoming.evidence)

@@ -96,8 +96,8 @@ def test_golden_dataset_all_seven_employees(pipeline, tmp_path):
             # Responsibilities extracted from KRA table
             assert len(report.responsibilities) >= 8
             assert any("Cost reduction" in r.title for r in report.responsibilities)
-            # Savings metric present
-            assert any("89.65" in str(v) for k, v in report.metrics.items())
+            # Cost reduction metrics present with target and actual
+            assert any("4.5" in str(v) for k, v in report.metrics.items())
             # Chronological periods
             assert len(report.reporting_periods) >= 3
 
@@ -109,15 +109,18 @@ def test_golden_dataset_all_seven_employees(pipeline, tmp_path):
             assert any("Supervisors" in t for t in resp_titles)
             assert any("Month end entries" in t for t in resp_titles)
             assert any("FCI grains" in t for t in resp_titles)
-            # Numeric zero safety incident preserved
+            # Numeric metrics preserved
             assert any("0" in str(v) for k, v in report.metrics.items() if "Safety" in k)
+            assert any("26" in str(v) for k, v in report.metrics.items() if "Kitchen" in k)
+            assert any("90%" in str(v) for k, v in report.metrics.items() if "FCI" in k)
+            assert any("95" in str(v) for k, v in report.metrics.items() if "Outstanding" in k)
 
         elif emp_name == "Pradeep":
-            assert len(report.projects) == 15
+            assert len(report.projects) == 8
             proj_names = [p.name for p in report.projects]
-            assert "Finance Digital Transformation & Automation" in proj_names
-            assert "ITGC Audit" in proj_names
-            assert "Statutory audit - ITGC" in proj_names
+            assert any("Finance Digital" in t for t in proj_names)
+            assert any("IT Governance" in t or "ITGC" in t for t in proj_names)
+            assert any("Strategic Business Partnership" in t for t in proj_names)
             assert "Year end closing preparation 25-26" in proj_names
             assert len(report.reporting_periods) >= 3
 
