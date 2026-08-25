@@ -87,16 +87,18 @@ def test_golden_dataset_all_seven_employees(pipeline, tmp_path):
 
         # 5. Specific Golden Cases Validation
         if emp_name == "Lakshmipathi":
-            assert len(report.projects) == 1
-            assert "Procurement through E-Bidding platform" in report.projects[0].name
-            assert len(report.achievements) >= 7
-            ach_titles = [a.title for a in report.achievements]
-            assert any("Tur Dal" in t for t in ach_titles)
-            assert any("Potato" in t for t in ach_titles)
-            assert any("Direct Farm" in t for t in ach_titles)
+            assert len(report.projects) >= 7
+            proj_names = [p.name for p in report.projects]
+            assert any("Procurement through E-Bidding platform" in t for t in proj_names)
+            assert any("Tur Dal" in t for t in proj_names)
+            assert any("Potato" in t for t in proj_names)
+            assert any("Direct Farm" in t for t in proj_names)
+            # Responsibilities extracted from KRA table
+            assert len(report.responsibilities) >= 8
+            assert any("Cost reduction" in r.title for r in report.responsibilities)
             # Savings metric present
             assert any("89.65" in str(v) for k, v in report.metrics.items())
-            # 4 chronological periods
+            # Chronological periods
             assert len(report.reporting_periods) >= 3
 
         elif emp_name == "Rahul Kumar jha":

@@ -385,8 +385,10 @@ class EmployeeReportPipeline:
             )
             status = cls._raw_value(
                 raw,
-                "status",
+                "current status_2",
+                "current status_3",
                 "current status",
+                "status",
                 "2026 06 01 00 00 00",
                 "2026 05 01 00 00 00",
                 "measure of success",
@@ -394,7 +396,7 @@ class EmployeeReportPipeline:
             )
             owner = cls._raw_value(raw, "owner", "poc")
             department = cls._raw_value(raw, "department", "unit")
-            timeline = cls._raw_value(raw, "timeline", "time line", "expected", "target")
+            timeline = cls._raw_value(raw, "timeline", "time line", "end date", "expected", "target")
 
             # Extract next action
             next_action = cls._infer_next_action(raw)
@@ -558,37 +560,41 @@ class EmployeeReportPipeline:
 
         for evidence in dataset.evidence:
             raw = evidence.raw_data or {}
-            # Only genuine responsibility evidence or checklists, never duplicate achievement section rows
-            if evidence.evidence_type != EvidenceType.RESPONSIBILITY:
-                if not (("task" in raw or "responsibility" in raw) and evidence.evidence_type != EvidenceType.ACHIEVEMENT):
-                    continue
 
-            title = cls._raw_value(
-                raw,
-                "task",
-                "responsibility",
-                "kra title",
-                "responsibility area",
-                "area",
-                "title",
-            )
-            description = cls._raw_value(
-                raw,
-                "description",
-                "goal description",
-                "objective",
-                "key result ( smart)",
-                "measure of success",
-            )
-            if not title:
-                title = description if description else (evidence.claim.split("|")[0].strip() if evidence.claim else "")
+            # Check if this row represents a functional responsibility / KRA target vs actual
+            is_resp = False
+            if evidence.evidence_type == EvidenceType.RESPONSIBILITY:
+                is_resp = True
+            elif evidence.evidence_type != EvidenceType.INITIATIVE:
+                exp = cls._raw_value(raw, "target", "expected", "expected mar'26", "expected mar 26", "measure of success")
+                act = cls._raw_value(raw, "actual", "actuals", "actuals for dec 25", "actuals for jan 26", "actuals for nov 25")
+                resp_area = cls._raw_value(raw, "responsibility area", "kra title", "task", "responsibility")
+                if (exp or act) and resp_area:
+                    is_resp = True
+                elif ("task" in raw or "responsibility" in raw) and evidence.evidence_type != EvidenceType.ACHIEVEMENT:
+                    is_resp = True
+
+            if not is_resp:
+                continue
+
+            resp_area = cls._raw_value(raw, "responsibility area", "kra title", "task", "responsibility", "area", "title")
+            desc = cls._raw_value(raw, "description", "goal description", "objective", "key result ( smart)", "measure of success")
+
+            if resp_area and desc and resp_area.lower() in ("people initiatives", "learning & development") and desc != resp_area:
+                title = f"{resp_area}: {desc}"
+            elif resp_area:
+                title = resp_area
+            elif desc:
+                title = desc
+            else:
+                title = evidence.claim.split("|")[0].strip() if evidence.claim else ""
 
             clean_title_str = cls._clean_title(strip_serial_prefixes(title))
             if not clean_title_str or len(clean_title_str) < 2 or is_placeholder(clean_title_str):
                 continue
 
-            target = cls._raw_value(raw, "target", "expected", "expected mar'26", "measure of success")
-            actual = cls._raw_value(raw, "actual", "actuals", "status", "achievement")
+            target = cls._raw_value(raw, "target", "expected", "expected mar'26", "expected mar 26", "measure of success")
+            actual = cls._raw_value(raw, "actual", "actuals", "actuals for dec 25", "actuals for jan 26", "actuals for nov 25", "status", "achievement")
 
             prov = Provenance(
                 source_file=str(evidence.source_file or ""),
@@ -602,7 +608,7 @@ class EmployeeReportPipeline:
             responsibilities.append(
                 Responsibility(
                     title=clean_title_str,
-                    description=description or "",
+                    description=desc if desc != clean_title_str else "",
                     target=target,
                     actual=actual,
                     status=actual or "Active",
@@ -621,6 +627,18 @@ class EmployeeReportPipeline:
                 continue
 
             raw = evidence.raw_data or {}
+
+            # Skip if this row is a pure project initiative or pure numeric KRA row (belongs in Projects or Responsibilities)
+            if evidence.evidence_type == EvidenceType.INITIATIVE:
+                continue
+
+            exp = cls._raw_value(raw, "expected", "expected mar'26", "expected mar 26", "target")
+            act = cls._raw_value(raw, "actuals", "actual", "actuals for dec 25", "actuals for jan 26", "actuals for nov 25")
+            if exp and act:
+                act_lower = str(act).lower().strip()
+                if not any(w in act_lower for w in ("done", "completed", "progress", "closed", "implemented")):
+                    continue
+
             resp_area = cls._raw_value(raw, "responsibility area", "project", "name of inititative")
             desc = cls._raw_value(raw, "description", "details", "goal description")
             ach_field = cls._raw_value(raw, "achievement", "title", "name of the initiative", "initiative", "task", "activity task")
@@ -769,7 +787,7 @@ class EmployeeReportPipeline:
                 return False
             if re.search(r"(expected|delivery|bhoomi|discussion|review|completed with|licens|vendor|shared)", v, re.IGNORECASE):
                 return False
-            if len(v.split()) > 4 and not any(k in v.lower() for k in ("target:", "rs", "km", "hours", "days", "spend")):
+            if len(v.split()) > 4 and not any(k in v.lower() for k in ("target:", "rs", "km", "hours", "days", "spend", "crores", "%")):
                 return False
             if any(c.isdigit() for c in v):
                 return True
@@ -798,8 +816,8 @@ class EmployeeReportPipeline:
                             metrics[clean_name] = clean_val
             elif evidence.evidence_type in (EvidenceType.ACHIEVEMENT, EvidenceType.RESPONSIBILITY):
                 raw = evidence.raw_data or {}
-                actual = cls._raw_value(raw, "actual", "actuals")
-                expected = cls._raw_value(raw, "target", "expected", "expected mar'26")
+                actual = cls._raw_value(raw, "actual", "actuals", "actuals for dec 25", "actuals for jan 26", "actuals for nov 25")
+                expected = cls._raw_value(raw, "target", "expected", "expected mar'26", "expected mar 26")
                 name = cls._raw_value(raw, "metric", "responsibility area", "achievement", "description")
                 if name and actual is not None:
                     clean_name = strip_serial_prefixes(name)
@@ -1117,7 +1135,7 @@ class EmployeeReportPipeline:
         if not normalized:
             return "UNKNOWN"
 
-        if any(p in normalized for p in ("cancelled", "canceled")):
+        if any(p in normalized for p in ("discontinued", "cancelled", "canceled", "dropped", "rejected")):
             return "CANCELLED"
         if any(p in normalized for p in ("on hold", "on-hold", "blocked", "hold", "pr hold", "cs hold")):
             return "ON_HOLD"

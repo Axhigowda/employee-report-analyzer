@@ -280,34 +280,22 @@ def find_header_row(
     start: int = 0,
 ) -> int | None:
     """
-    Detect the most likely tabular header row.
-
-    We deliberately avoid simply taking the first non-empty row because
-    Excel reports commonly contain titles such as:
-
-        Monthly Report
-        Major Achievements for the month
-        2026-27 KRA's
-
-    before the actual table.
+    Detect the first tabular header row in the dataframe.
     """
-
-    best_row: int | None = None
-    best_score = 0
-
-    for index in range(
-        start,
-        len(df),
-    ):
+    for index in range(start, len(df)):
         row = df.iloc[index]
-
         score = header_score(row)
+        if score >= 18:
+            return index
 
-        if score > best_score:
-            best_score = score
-            best_row = index
+    # Fallback to lower threshold if no high-confidence header found
+    for index in range(start, len(df)):
+        row = df.iloc[index]
+        score = header_score(row)
+        if score >= 12:
+            return index
 
-    return best_row
+    return None
 
 
 def build_headers(
@@ -1377,9 +1365,23 @@ def normalize_sheet(
         # Determine whether this row starts a new logical record or
         # continues the previous one.
         is_continuation = False
+        has_sub_item_metrics = bool(
+            any(k in record for k in ("expected", "actuals", "expected mar 26", "actual", "status", "target", "measurement"))
+            and any(record.get(k) for k in ("expected", "actuals", "expected mar 26", "actual", "status", "target", "measurement") if k in record)
+        )
+        has_desc = bool(record.get("description") or record.get("detailed description with initial status") or record.get("task"))
+
         if pending_record is not None:
             if has_id_col:
-                is_continuation = not has_id
+                # If the row has no ID, but has its own description and distinct expected/actuals, it's a sub-item record!
+                if not has_id and has_sub_item_metrics and has_desc:
+                    is_continuation = False
+                    # Inherit parent category/responsibility area if missing
+                    for parent_key in ("responsibility area", "kra title", "name of inititative", "project"):
+                        if parent_key in pending_record and parent_key not in record:
+                            record[parent_key] = pending_record[parent_key]
+                else:
+                    is_continuation = not has_id
             else:
                 is_continuation = is_likely_continuation_row(
                     record,

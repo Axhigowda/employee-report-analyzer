@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 from pathlib import Path
 from typing import Any
@@ -351,12 +352,9 @@ def export_report_pdf(
         for p in report.projects:
             desc_status = []
             if p.description:
-                desc_status.append(p.description)
-            if p.status and p.status != p.description:
-                desc_status.append(f"<b>Status:</b> {p.status}")
-            if p.next_action:
-                desc_status.append(f"<b>Next:</b> {p.next_action}")
-
+                desc_status.append(html.escape(p.description))
+            if p.status:
+                desc_status.append(f"<b>Status:</b> {html.escape(p.status)}")
             desc_html = "<br/>".join(desc_status) if desc_status else "-"
 
             stage_color = {
@@ -365,18 +363,19 @@ def export_report_pdf(
                 "UAT": "#8b5cf6",
                 "DEVELOPMENT": "#ea580c",
                 "ON_HOLD": "#dc2626",
+                "CANCELLED": "#dc2626",
                 "VENDOR_SELECTION": "#d97706",
                 "PLANNING": "#64748b",
             }.get(p.lifecycle_stage, "#64748b")
 
-            stage_html = f"<font color='{stage_color}'><b>{p.lifecycle_stage}</b></font>"
+            stage_html = f"<font color='{stage_color}'><b>{html.escape(p.lifecycle_stage)}</b></font>"
 
             table_rows.append([
-                Paragraph(p.name, styles["TableCellBold"]),
+                Paragraph(html.escape(p.name), styles["TableCellBold"]),
                 Paragraph(desc_html, styles["TableCell"]),
                 Paragraph(stage_html, styles["Tag"]),
-                Paragraph(p.owner or "-", styles["TableCell"]),
-                Paragraph(p.timeline or "-", styles["TableCell"]),
+                Paragraph(html.escape(p.owner or "-"), styles["TableCell"]),
+                Paragraph(html.escape(p.timeline or "-"), styles["TableCell"]),
             ])
 
         proj_table = Table(table_rows, colWidths=[130, 194, 65, 55, 60], repeatRows=1)
@@ -412,8 +411,8 @@ def export_report_pdf(
 
         for k, v in sorted(valid_metrics.items()):
             metric_rows.append([
-                Paragraph(k, styles["TableCellBold"]),
-                Paragraph(str(v), styles["TableCell"]),
+                Paragraph(html.escape(k), styles["TableCellBold"]),
+                Paragraph(html.escape(str(v)), styles["TableCell"]),
                 Paragraph("Performance KPI", styles["TableCell"]),
             ])
 
@@ -441,22 +440,30 @@ def export_report_pdf(
         ach_items = []
         ach_items.append(Paragraph("Major Achievements", styles["SectionHeading"]))
         for ach in report.achievements:
-            desc = f" — {ach.description}" if ach.description else ""
-            stat = f" (Status: {ach.status})" if ach.status else ""
-            met = f" [Metric: {ach.metric}]" if ach.metric else ""
-            ach_items.append(Paragraph(f"• <b>{ach.title}</b>{desc}{stat}{met}", styles["Body"]))
-        story.append(KeepTogether(ach_items))
+            desc = f" — {html.escape(ach.description)}" if ach.description else ""
+            stat = f" (Status: {html.escape(ach.status)})" if ach.status else ""
+            met = f" [Metric: {html.escape(ach.metric)}]" if ach.metric else ""
+            safe_t = html.escape(ach.title)
+            ach_items.append(Paragraph(f"• <b>{safe_t}</b>{desc}{stat}{met}", styles["Body"]))
+        if len(ach_items) <= 6:
+            story.append(KeepTogether(ach_items))
+        else:
+            story.extend(ach_items)
         story.append(Spacer(1, 12))
 
     if report.responsibilities:
         resp_items = []
         resp_items.append(Paragraph("Core Responsibilities & KRA Focus", styles["SectionHeading"]))
         for r in report.responsibilities:
-            desc = f" — {r.description}" if r.description else ""
-            tgt = f" | Target: {r.target}" if r.target else ""
-            act = f" | Actual: {r.actual}" if r.actual else ""
-            resp_items.append(Paragraph(f"• <b>{r.title}</b>{desc}{tgt}{act}", styles["Body"]))
-        story.append(KeepTogether(resp_items))
+            desc = f" — {html.escape(r.description)}" if r.description else ""
+            tgt = f" | Target: {html.escape(r.target)}" if r.target else ""
+            act = f" | Actual: {html.escape(r.actual)}" if r.actual else ""
+            safe_t = html.escape(r.title)
+            resp_items.append(Paragraph(f"• <b>{safe_t}</b>{desc}{tgt}{act}", styles["Body"]))
+        if len(resp_items) <= 6:
+            story.append(KeepTogether(resp_items))
+        else:
+            story.extend(resp_items)
         story.append(Spacer(1, 12))
 
     # -------------------------------------------------------------
@@ -473,14 +480,14 @@ def export_report_pdf(
         if all_risks:
             story.append(Paragraph("<b>Identified Risks & Blockers:</b>", styles["SubSectionHeading"]))
             for r in all_risks[:8]:
-                clean_r = " ".join(r.split())[:180]
+                clean_r = html.escape(" ".join(r.split())[:180])
                 story.append(Paragraph(f"• {clean_r}", styles["Body"]))
             story.append(Spacer(1, 4))
 
         if report.next_actions:
             story.append(Paragraph("<b>Immediate Next Actions:</b>", styles["SubSectionHeading"]))
             for a in report.next_actions[:8]:
-                clean_a = " ".join(a.split())[:180]
+                clean_a = html.escape(" ".join(a.split())[:180])
                 story.append(Paragraph(f"• {clean_a}", styles["Body"]))
             story.append(Spacer(1, 4))
 
