@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from .excel_normalizer import (
     detect_period,
     normalize_workbook,
@@ -86,7 +88,6 @@ def _default_extractor(path: Path):
 
 
 def _document_sheet_to_dataframe(sheet):
-    import pandas as pd
     return pd.DataFrame(sheet.rows)
 
 

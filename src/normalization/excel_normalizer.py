@@ -237,6 +237,16 @@ KNOWN_HEADERS = {
     "activity",
     "task",
     "owner",
+    "initiative title",
+    "workstream lead",
+    "deliverables status update",
+    "target budget",
+    "actual realized cost",
+    "risk assessment dependencies",
+    "q3 milestone completion date",
+    "kpi dimension",
+    "q3 actuals",
+    "benchmark",
 }
 
 
@@ -719,27 +729,33 @@ def infer_evidence_type(
         "blockers",
     }
 
-    if normalized_headers & risk_headers:
-        return EvidenceType.RISK
+    has_project_intent = any(
+        any(p in h for p in ("initiative", "project", "deliverable", "task", "milestone", "kpi", "kra"))
+        for h in normalized_headers
+    )
 
-    if any(
+    if not has_project_intent:
+        if normalized_headers & risk_headers:
+            return EvidenceType.RISK
+
+        if any(
             token in normalized_text
             for token in (
-                    "risk / issue",
-                    "risks / issues",
-                    "risk and issue",
-                    "risks and issues",
-                    "challenge",
-                    "challenges",
-                    "support required",
-                    "support needed",
-                    "dependency",
-                    "dependencies",
-                    "blocker",
-                    "blockers",
+                "risk / issue",
+                "risks / issues",
+                "risk and issue",
+                "risks and issues",
+                "challenge",
+                "challenges",
+                "support required",
+                "support needed",
+                "dependency",
+                "dependencies",
+                "blocker",
+                "blockers",
             )
-    ):
-        return EvidenceType.RISK
+        ):
+            return EvidenceType.RISK
 
     # ------------------------------------------------------------------
     # Achievement

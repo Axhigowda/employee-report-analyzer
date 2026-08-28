@@ -123,18 +123,28 @@ python3 -m src.cli
 Running `python3 -m src.run_all` generates:
 ```text
 output/
+├── _TeamSummary.pdf         # 1-Page Cross-Employee Executive Summary Dashboard Index
+├── _TeamSummary.md          # 1-Page Cross-Employee Summary Index (Markdown)
 ├── <EmployeeName>.pdf       # Primary executive PDF report
-├── json/
-│   └── <EmployeeName>.json  # Canonical machine-readable JSON with provenance
-└── markdown/
-    └── <EmployeeName>.md    # Structured markdown report
+├── <EmployeeName>.json      # Canonical machine-readable JSON with provenance
+└── <EmployeeName>.md        # Structured markdown report
 ```
+
+---
+
+## Automated Quality Validation
+
+Run the post-generation quality gate suite:
+```bash
+python3 -m src.validate_output
+```
+Validates unrounded float checks, status/metric duplicate checks, cross-section numeric consistency, and zero-content guards.
 
 ---
 
 ## Testing
 
-Run the full automated test suite (250 tests):
+Run the full automated test suite:
 ```bash
 pytest -q
 ```

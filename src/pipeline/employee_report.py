@@ -321,6 +321,7 @@ class EmployeeReportPipeline:
                 raw,
                 "project name",
                 "project",
+                "initiative title",
                 "name of inititative",
                 "initiative name",
                 "initiative",
@@ -337,6 +338,7 @@ class EmployeeReportPipeline:
                 lower_claim = claim.lower()
                 for marker in (
                     "project name:",
+                    "initiative title:",
                     "name of inititative:",
                     "initiative name:",
                     "initiative:",
@@ -359,6 +361,7 @@ class EmployeeReportPipeline:
                             " | status:",
                             " | owner:",
                             " | poc:",
+                            " | workstream lead:",
                         )
                         end = len(remainder)
                         for sep in separators:
@@ -374,6 +377,8 @@ class EmployeeReportPipeline:
             description = cls._raw_value(
                 raw,
                 "description",
+                "deliverables status update",
+                "deliverables",
                 "detailed description",
                 "detailed description with initial status",
                 "project description",
@@ -388,15 +393,16 @@ class EmployeeReportPipeline:
                 "current status_2",
                 "current status_3",
                 "current status",
+                "deliverables status update",
                 "status",
                 "2026 06 01 00 00 00",
                 "2026 05 01 00 00 00",
                 "measure of success",
                 "actuals",
             )
-            owner = cls._raw_value(raw, "owner", "poc")
+            owner = cls._raw_value(raw, "owner", "poc", "workstream lead", "lead")
             department = cls._raw_value(raw, "department", "unit")
-            timeline = cls._raw_value(raw, "timeline", "time line", "end date", "expected", "target")
+            timeline = cls._raw_value(raw, "timeline", "time line", "end date", "q3 milestone completion date", "expected", "target")
 
             # Extract next action
             next_action = cls._infer_next_action(raw)
@@ -877,7 +883,7 @@ class EmployeeReportPipeline:
 
         for evidence in dataset.evidence:
             raw = evidence.raw_data or {}
-            if any(k in raw for k in ("name of inititative", "project name", "current status_2", "start date", "end date")):
+            if any(k in raw for k in ("name of inititative", "current status_2", "current status_3", "mention")):
                 continue
 
             if evidence.evidence_type == EvidenceType.METRIC:
@@ -1363,8 +1369,8 @@ class EmployeeReportPipeline:
             base.metrics[k] = v
 
         # Executive Summary
-        if incoming.executive_summary and (not base.executive_summary or len(incoming.executive_summary) > len(base.executive_summary)):
-            base.executive_summary = incoming.executive_summary
+        if incoming.executive_summary and incoming.executive_summary.strip():
+            base.executive_summary = incoming.executive_summary.strip()
 
         return base
 

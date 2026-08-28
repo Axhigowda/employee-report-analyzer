@@ -252,6 +252,22 @@ def run_batch(
     print(f"Primary PDFs & JSONs written to: {output_dir}")
     print("=" * 70)
 
+    # Generate cross-employee executive summary index if multiple employees processed
+    if not specific_employee and len(results) > 1:
+        try:
+            from src.reporting.team_summary import generate_team_summary
+            md_path, pdf_path = generate_team_summary(output_dir)
+            print(f"[SUMMARY] Generated 1-page Team Summary index: {pdf_path.name} & {md_path.name}")
+        except Exception as exc:
+            print(f"[WARN] Failed to generate team summary: {exc}")
+
+        # Run automated quality validation
+        try:
+            from src.validate_output import validate_all_outputs
+            validate_all_outputs(output_dir)
+        except Exception as exc:
+            print(f"[WARN] Failed to run automated output validation: {exc}")
+
     return results
 
 

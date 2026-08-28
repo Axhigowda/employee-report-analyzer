@@ -281,31 +281,65 @@ class OpenAICompletion:
                 "user_prompt must not be empty"
             )
 
-        try:
-            response = self.client.responses.create(
-                model=self.model,
-                instructions=system_prompt,
-                input=user_prompt,
-                text={
-                    "format": {
+        output_text = None
+
+        # 1. Try responses.create (used by FakeClient in tests and beta API)
+        if hasattr(self.client, "responses") and hasattr(self.client.responses, "create"):
+            try:
+                response = self.client.responses.create(
+                    model=self.model,
+                    instructions=system_prompt,
+                    input=user_prompt,
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "employee_report",
+                            "strict": True,
+                            "schema": EMPLOYEE_REPORT_JSON_SCHEMA,
+                        }
+                    },
+                )
+                output_text = getattr(response, "output_text", None)
+                if not output_text and hasattr(response, "choices") and response.choices:
+                    output_text = response.choices[0].message.content
+            except Exception as exc:
+                if not (hasattr(self.client, "chat") and hasattr(self.client.chat, "completions")):
+                    raise OpenAIProviderError(f"OpenAI request failed: {exc}") from exc
+
+        # 2. Try standard chat.completions.create with structured outputs
+        if not output_text and hasattr(self.client, "chat") and hasattr(self.client.chat, "completions"):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={
                         "type": "json_schema",
-                        "name": "employee_report",
-                        "strict": True,
-                        "schema": EMPLOYEE_REPORT_JSON_SCHEMA,
-                    }
-                },
-            )
-
-        except Exception as exc:
-            raise OpenAIProviderError(
-                f"OpenAI request failed: {exc}"
-            ) from exc
-
-        output_text = getattr(
-            response,
-            "output_text",
-            None,
-        )
+                        "json_schema": {
+                            "name": "employee_report",
+                            "strict": True,
+                            "schema": EMPLOYEE_REPORT_JSON_SCHEMA,
+                        },
+                    },
+                )
+                if response.choices and response.choices[0].message:
+                    output_text = response.choices[0].message.content
+            except Exception as exc:
+                try:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system_prompt + "\nReturn ONLY a valid JSON object matching the requested schema."},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                    )
+                    if response.choices and response.choices[0].message:
+                        output_text = response.choices[0].message.content
+                except Exception as inner_exc:
+                    raise OpenAIProviderError(f"OpenAI request failed: {exc} (json_object fallback: {inner_exc})") from exc
 
         if not output_text:
             raise OpenAIProviderError(
