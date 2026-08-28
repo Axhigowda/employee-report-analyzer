@@ -117,7 +117,15 @@ def process_employee(
         if is_ai_active:
             print(f"[AI CALL] employee={employee_name} files={len(files)}")
 
-        report = pipeline.analyze_employee(employee_name, files)
+        try:
+            report = pipeline.analyze_employee(employee_name, files)
+        except Exception as ai_exc:
+            if is_ai_active:
+                print(f"[AI WARN] AI enrichment failed ({ai_exc}); falling back to deterministic extraction for '{employee_name}'.")
+                fallback_pipeline = EmployeeReportPipeline()
+                report = fallback_pipeline.analyze_employee(employee_name, files)
+            else:
+                raise
 
         if is_ai_active and report.executive_summary:
             print(f"[AI SUCCESS] employee={employee_name}")

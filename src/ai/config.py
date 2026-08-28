@@ -47,9 +47,9 @@ class AIConfig:
     @classmethod
     def from_environment(cls) -> "AIConfig":
         _load_env_file()
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
 
-        if not api_key:
+        if not api_key or api_key in ("your_openai_api_key_here", "sk-your-openai-api-key-here", "your_api_key_here") or api_key.startswith("your_"):
             raise AIConfigurationError("OPENAI_API_KEY is not configured.")
 
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
