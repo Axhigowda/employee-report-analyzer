@@ -1558,6 +1558,27 @@ def _record_to_evidence(
 # ---------------------------------------------------------------------------
 
 
+def _is_historical_archive_sheet(sheet_name: str, df: pd.DataFrame, doc_period: ReportingPeriod | None) -> bool:
+    """
+    Detect if an auxiliary sheet in an Excel workbook is a stale/historical archive
+    from previous years (e.g. 'Sheet2' with 2023 columns or empty 'Sheet3').
+    """
+    s_lower = sheet_name.lower().strip()
+    if s_lower in ("sheet3", "sheet 3") or df.empty:
+        return True
+
+    if re.match(r"^sheet\d+$", s_lower):
+        date_strs = [str(c).lower() for c in df.columns]
+        if len(df) > 0:
+            date_strs.extend(str(c).lower() for c in df.iloc[0:2].values.flatten())
+        has_old_dates = any(re.search(r"\b202[0-3]\b|\b2[0-3]\b", d) for d in date_strs)
+        has_current_dates = any(re.search(r"\b202[5-7]\b|\b2[5-7]\b", d) for d in date_strs)
+        if has_old_dates and not has_current_dates:
+            return True
+
+    return False
+
+
 def normalize_workbook(
     employee: str,
     path: str | Path,
@@ -1575,6 +1596,8 @@ def normalize_workbook(
     )
 
     for sheet_name, df in sheets.items():
+        if _is_historical_archive_sheet(sheet_name, df, period):
+            continue
 
         evidence = normalize_sheet(
             employee=employee,

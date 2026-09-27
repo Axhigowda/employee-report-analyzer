@@ -210,7 +210,7 @@ def is_monthly_report_dataframe(
 
     initiatives_row = _find_row(
         dataframe,
-        "initiatives fy 26-27",
+        "initiatives",
     )
 
     return (

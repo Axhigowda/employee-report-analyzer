@@ -142,9 +142,48 @@ Validates unrounded float checks, status/metric duplicate checks, cross-section 
 
 ---
 
+## Web UI & Month-over-Month Progress Scorecard
+
+A glanceable, interactive Web UI designed for managers to evaluate employee progress in 5–10 seconds without navigating raw terminal logs or folder hierarchies.
+
+### Launching the Web UI
+Run the standalone local application:
+```bash
+python3 app.py
+# Or specify a custom port:
+python3 app.py --port 8501
+```
+Open **`http://127.0.0.1:8501`** in any browser.
+
+### Web UI Features
+- **Upload / Select Modes**:
+  - Select an existing employee folder directly from `data/raw/employee_reports/` via dropdown.
+  - Or upload multiple monthly report files (`.xlsx`, `.docx`, etc.) for ad-hoc analysis.
+- **Glanceable Executive Verdict**:
+  - Color-coded verdict badge (`IMPROVED` 🟩, `STALLED` 🟨, `DECLINED` 🟥, `MIXED` 🟧, `INSUFFICIENT_DATA` ⬜).
+  - Top 2–3 concise quantitative reasons displayed front-and-center.
+- **Multi-Period Timeline Navigation**:
+  - Interactive transition selector for employees with 3+ reports ($P_1 \to P_2$, $P_2 \to P_3$).
+- **Compact Metric & Project Transition Tables**:
+  - Quantitative metric deltas with numeric change and direction indicator pills.
+  - Project lifecycle progressions, completions, and stalled milestone warnings.
+- **One-Click Full PDF Download**:
+  - Direct download button generating the full executive PDF report on demand.
+
+### Deterministic Verdict Logic
+The progress evaluation engine (`src/comparison/progress_engine.py`) employs explainable, rule-based logic:
+- **`IMPROVED`**: Net positive metric movement or forward project lifecycle progression (e.g. `DEVELOPMENT` $\to$ `UAT` $\to$ `COMPLETED`) with zero lifecycle regressions and no active responsibilities dropped without replacement.
+- **`DECLINED`**: Majority of metrics declined, or projects regressed / placed `ON_HOLD` / `CANCELLED`, or substantial loss of key responsibilities/achievements without offsetting gains.
+- **`STALLED`**: Projects remaining in the same non-terminal lifecycle stage for 2+ consecutive periods with flat/steady metrics.
+- **`MIXED`**: Coexistence of significant positive gains (e.g., metric improvements or delivered projects) with negative indicators (e.g., stalled initiatives or dropped metrics).
+- **`INSUFFICIENT_DATA`**: Fewer than 2 reporting periods available for the employee.
+
+---
+
 ## Testing
 
 Run the full automated test suite:
 ```bash
 pytest -q
 ```
+

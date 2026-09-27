@@ -89,6 +89,7 @@ class ProjectSummary:
     aliases: list[str] = field(default_factory=list)
     historical_updates: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[Provenance] = field(default_factory=list)
+    raw_fields: dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0
 
     def __post_init__(self) -> None:

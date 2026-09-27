@@ -241,6 +241,7 @@ class EmployeeReportPipeline:
                             department=department,
                             timeline=timeline,
                             lifecycle_stage=stage,
+                            raw_fields=dict(raw),
                             evidence=[prov],
                         )
                     )
@@ -272,6 +273,7 @@ class EmployeeReportPipeline:
                                 department=department,
                                 timeline=timeline,
                                 lifecycle_stage=stage,
+                                raw_fields=dict(raw),
                                 evidence=[prov],
                             )
                         )
@@ -298,6 +300,7 @@ class EmployeeReportPipeline:
                 department=department,
                 timeline=timeline,
                 lifecycle_stage=stage,
+                raw_fields=dict(raw),
                 evidence=[prov],
             )
         )
@@ -655,8 +658,9 @@ class EmployeeReportPipeline:
             resp_area = cls._raw_value(raw, "responsibility area", "kra title", "task", "responsibility", "area", "title")
             desc = cls._raw_value(raw, "description", "goal description", "objective", "key result ( smart)", "measure of success")
 
-            if resp_area and desc and resp_area.lower() in ("people initiatives", "learning & development") and desc != resp_area:
-                title = f"{resp_area}: {desc}"
+            if resp_area and desc and (resp_area.lower() in ("people initiatives", "learning & development", "app support, enhancement", "app support", "general") or len(resp_area) < 4) and desc.lower() != resp_area.lower():
+                first_clause = desc.split(";")[0].split(".")[0].strip()
+                title = f"{resp_area}: {first_clause[:65]}"
             elif resp_area:
                 title = resp_area
             elif desc:
@@ -905,9 +909,8 @@ class EmployeeReportPipeline:
                     clean_val = " ".join(val_str.split())
                     if clean_name and is_valid_metric_name(clean_name) and not is_placeholder(clean_name) and is_numeric_metric_value(clean_val):
                         formatted_val = round_float_val(clean_val)
-                        if clean_name in metrics and metrics[clean_name] in ("On Time", "on time") and formatted_val == "0":
-                            continue
-                        metrics[clean_name] = formatted_val
+                        if clean_name not in metrics or (metrics[clean_name] in ("0", "0.0", "0.00") and formatted_val not in ("0", "0.0", "0.00")):
+                            metrics[clean_name] = formatted_val
             elif evidence.evidence_type in (EvidenceType.ACHIEVEMENT, EvidenceType.RESPONSIBILITY):
                 raw = evidence.raw_data or {}
                 actual = cls._raw_value(raw, "actual", "actuals", "actuals for jan 26", "actuals for dec 25", "actuals for nov 25")
@@ -1577,9 +1580,9 @@ class EmployeeReportPipeline:
         if not employee_name.strip():
             raise ValueError("employee_name must not be empty")
 
-        paths = list(files)
+        paths = [Path(p) for p in files if Path(p).exists() and Path(p).stat().st_size > 0]
         if not paths:
-            raise ValueError("No employee report files found.")
+            raise ValueError("No valid, non-empty employee report files found.")
 
         documents: list[Document] = []
         for file_path in paths:
